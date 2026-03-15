@@ -20,19 +20,40 @@ class GarminSync:
         self.fit_dir.mkdir(parents=True, exist_ok=True)
 
     def sync_daily_metrics(self, target_date: date | None = None) -> dict[str, Any]:
+        from datetime import timedelta
         target_date = target_date or date.today()
         logger.info("Syncing daily metrics for %s", target_date)
 
         metrics = self.client.get_daily_metrics(target_date)
-        self.db.upsert_daily_metrics(metrics)
 
-        logger.info(
-            "Synced metrics: HRV=%s, sleep=%smin, BB=%s, RHR=%s",
-            metrics.get("hrv_last_night"),
-            metrics.get("sleep_duration_min"),
-            metrics.get("body_battery_am"),
-            metrics.get("resting_hr"),
+        has_data = any(
+            metrics.get(k) is not None
+            for k in ("hrv_last_night", "sleep_duration_min", "resting_hr")
         )
+
+        # If today has no data, try yesterday (Garmin may not have processed yet)
+        if not has_data and target_date == date.today():
+            yesterday = target_date - timedelta(days=1)
+            logger.info("No data for today, trying yesterday (%s)", yesterday)
+            metrics = self.client.get_daily_metrics(yesterday)
+            has_data = any(
+                metrics.get(k) is not None
+                for k in ("hrv_last_night", "sleep_duration_min", "resting_hr")
+            )
+
+        if has_data:
+            self.db.upsert_daily_metrics(metrics)
+            logger.info(
+                "Synced metrics [%s]: HRV=%s, sleep=%smin, BB=%s, RHR=%s",
+                metrics.get("date"),
+                metrics.get("hrv_last_night"),
+                metrics.get("sleep_duration_min"),
+                metrics.get("body_battery_am"),
+                metrics.get("resting_hr"),
+            )
+        else:
+            logger.warning("No valid metrics for %s or yesterday, skipping", target_date)
+
         return metrics
 
     def sync_activities(self, limit: int = 10) -> list[dict[str, Any]]:

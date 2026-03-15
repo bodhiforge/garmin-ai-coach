@@ -137,18 +137,45 @@ def cmd_analyze(args: argparse.Namespace) -> None:
 
 
 def cmd_reflect(args: argparse.Namespace) -> None:
-    """Self-reflect: sync data, review, update memory, send proactive message."""
+    """Smart sync + event-driven notifications."""
     config, _, _, sync, coach, bot = build_components(args.config)
 
+    # Smart sync with merge
     sync.sync_daily_metrics()
     sync.sync_activities()
 
-    print("Reflecting...")
-    message = coach.reflect()
+    # Event-driven notification (Python decides, LLM writes copy)
+    from .ai.notify import should_notify
+    should_send, events, score = should_notify(sync.db)
+    print(f"Events: {events} | Score: {score} | Send: {should_send}")
 
-    if message is not None:
-        print(f"Proactive message: {message}")
+    if should_send:
+        # LLM only writes the message text, all decisions already made by Python
+        event_summary = "; ".join(events)
+        message = coach._call_ai(
+            "You are a concise fitness coach. Write a short Telegram notification (2-3 sentences) "
+            "about these events. Be direct, reference specific numbers. Do not add generic advice.",
+            event_summary,
+        )
+        print(f"Message: {message}")
         if not args.dry_run:
+            # Record each event type
+            for event in events:
+                event_type = event.split(":")[0].strip().lower().replace(" ", "_")
+                if "activity" in event_type:
+                    # Use activity ID as type for dedup
+                    activities = sync.db.get_recent_activities(days=1)
+                    if activities:
+                        event_type = f"activity_{activities[0]["id"]}"
+                elif "pr" in event_type:
+                    event_type = "ski_pr"
+                elif "hrv" in event_type:
+                    event_type = "hrv_alert"
+                elif "rhr" in event_type:
+                    event_type = "rhr_alert"
+                elif "training" in event_type or "inactive" in event_type:
+                    event_type = "inactive"
+                sync.db.add_notification(event_type, message)
             asyncio.run(bot.send_message(message))
             print("Sent to Telegram.")
     else:

@@ -79,6 +79,13 @@ CREATE TABLE IF NOT EXISTS user_profile (
     value TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    type TEXT NOT NULL,
+    content TEXT NOT NULL
+);
 """
 
 
@@ -306,3 +313,33 @@ class Database:
                 "SELECT * FROM chat_history ORDER BY id DESC LIMIT ?", (limit,)
             ).fetchall()
             return [dict(r) for r in reversed(rows)]
+
+    # -- Notifications --
+
+    def add_notification(self, notif_type: str, content: str) -> None:
+        with self._connection() as conn:
+            conn.execute(
+                "INSERT INTO notifications (timestamp, type, content) VALUES (?, ?, ?)",
+                (datetime.now().isoformat(), notif_type, content),
+            )
+
+    def get_last_notification(self, notif_type: str | None = None) -> dict[str, Any] | None:
+        with self._connection() as conn:
+            if notif_type is not None:
+                row = conn.execute(
+                    "SELECT * FROM notifications WHERE type = ? ORDER BY id DESC LIMIT 1",
+                    (notif_type,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT * FROM notifications ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+            return dict(row) if row else None
+
+    def hours_since_last_notification(self, notif_type: str | None = None) -> float:
+        last = self.get_last_notification(notif_type)
+        if last is None:
+            return 999.0
+        from datetime import datetime as dt
+        last_time = dt.fromisoformat(last["timestamp"])
+        return (dt.now() - last_time).total_seconds() / 3600

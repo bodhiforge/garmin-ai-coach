@@ -47,16 +47,23 @@ Things to track:
 - Total vertical drop per session trend
 
 ### PROACTIVE MESSAGE
-If there's something the user should know RIGHT NOW, write a short message (2-3 sentences max). Examples:
-- "You haven't trained in 6 days. Your HRV is high — good day to get back."
-- "3 consecutive snowboard days — your resting HR is elevated. Consider a rest day."
-- "New season PR: max speed 32 km/h (up from 28 last session)."
-- "Your last 2 ski sessions show speed dropping after run 5. Keep sessions to 5 runs for quality."
-- "HRV trending down 3 days straight. If you're skiing tomorrow, go easy."
+If there is something the user should know RIGHT NOW, write a short message (2-3 sentences max).
 
-If nothing urgent, write: `NO MESSAGE`
+CRITICAL RULES:
+- ONLY message about NEW information since the last reflection. Do NOT repeat old PRs, old observations, or previously sent messages.
+- Check the memory files — if a PR or observation is already recorded there, it is NOT new.
+- If there are no NEW activities since last reflection and metrics are stable, write: NO MESSAGE
+- Only message for genuinely actionable insights, not routine status updates.
+- If metrics data is missing (None/null), do NOT make up numbers or send messages about incomplete data.
 
-Rules:
-- Be data-driven. Don't nag without evidence.
-- Only message for genuinely useful observations, not routine updates.
-- Memory updates should be factual observations, not coaching advice.
+Good examples:
+- "New activity detected: you skied today and hit 33 km/h — new season PR!"
+- "HRV dropped 15% from yesterday. Consider a recovery day."
+- "You haven't trained in 5 days. HRV is good — time to get back."
+
+Bad examples (DO NOT SEND):
+- Repeating a PR that's already in memory
+- "Keep pushing towards your target" (generic, not actionable)
+- Messages based on stale or missing data
+
+If nothing genuinely new, write: `NO MESSAGE`
