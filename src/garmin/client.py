@@ -182,6 +182,9 @@ def _parse_sleep_score(sleep: dict | None) -> int | None:
     return daily.get("sleepScores", {}).get("overall", {}).get("value")
 
 
+
+
+
 def _parse_body_battery_morning(battery: list[dict] | None) -> int | None:
     if not battery:
         return None

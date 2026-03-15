@@ -126,6 +126,29 @@ class AICoach:
         memory = self.get_memory()
         return f"\n## User Context (from memory)\n{memory}\n" if memory else ""
 
+    def _sleep_accountability(self, recent_metrics: list[dict[str, Any]]) -> str:
+        """Build sleep accountability context — how many nights violated 00:30 PST rule."""
+        from datetime import datetime, timezone, timedelta
+        violations = []
+        PST = timezone(timedelta(hours=-8))
+        for m in recent_metrics:
+            sleep_start = m.get("sleep_start_time")  # ISO string or None
+            if not sleep_start:
+                continue
+            try:
+                dt = datetime.fromisoformat(str(sleep_start))
+                dt_pst = dt.astimezone(PST)
+                if dt_pst.hour > 0 or (dt_pst.hour == 0 and dt_pst.minute > 30):
+                    violations.append(f"{m.get('date', '?')} — 睡眠时间 {dt_pst.strftime('%H:%M')} PST")
+            except Exception:
+                continue
+
+        if not violations:
+            return "本週睡眠達標 ✅ (全部在 00:30 前入睡)"
+        count = len(violations)
+        details = "\n".join(violations[-3:])
+        return f"本週超標 {count} 次：\n{details}"
+
     def morning_briefing(self, metrics: dict[str, Any]) -> str:
         recent_activities = self.db.get_recent_activities(days=7)
         recent_metrics = self.db.get_recent_metrics(days=7)
