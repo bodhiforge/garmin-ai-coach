@@ -150,53 +150,42 @@ class AICoach:
         return f"本週超標 {count} 次：\n{details}"
 
     def morning_briefing(self, metrics: dict[str, Any]) -> str:
-        recent_activities = self.db.get_recent_activities(days=7)
-        recent_metrics = self.db.get_recent_metrics(days=7)
+        from .insights import daily_summary
+
+        computed = daily_summary(self.db)
 
         prompt = self._load_prompt("morning").format(
             metrics=_format_metrics(metrics),
-            recent_activities=_format_activities(recent_activities),
-            recent_metrics=_format_metrics_list(recent_metrics),
+            computed_insights=computed,
         )
         return self._call_ai(prompt + self._memory_context())
 
     def post_gym_analysis(
         self, activity: dict[str, Any], sets: list[dict[str, Any]]
     ) -> str:
-        recent_activities = self.db.get_recent_activities(days=7, activity_type="strength")
+        from .insights import gym_insights, recovery_insights
+
+        computed_gym = gym_insights(self.db)
+        computed_recovery = recovery_insights(self.db)
 
         prompt = self._load_prompt("post_gym").format(
             session_summary=_format_activity_summary(activity),
             sets_data=_format_gym_sets(sets),
-            recent_context=_format_activities(recent_activities),
+            computed_insights=f"{computed_gym}\n\n{computed_recovery}",
         )
         return self._call_ai(prompt)
 
     def post_ski_analysis(
         self, activity: dict[str, Any], runs: list[dict[str, Any]]
     ) -> str:
-        recent_activities = self.db.get_recent_activities(days=90, activity_type="skiing")
+        from .insights import ski_insights
 
-        # Build comparison data from previous sessions
-        prev_sessions = []
-        for a in recent_activities:
-            if a["id"] == activity["id"]:
-                continue
-            prev_runs = self.db.get_ski_runs(a["id"])
-            if prev_runs:
-                speeds = [r.get("max_speed_kmh", 0) or 0 for r in prev_runs]
-                drops = [r.get("vertical_drop_m", 0) or 0 for r in prev_runs]
-                prev_sessions.append(
-                    f"{a['date']}: {len(prev_runs)} runs | "
-                    f"max {max(speeds):.1f}km/h | "
-                    f"drop {sum(drops):.0f}m | "
-                    f"{a.get('duration_min', '?')}min"
-                )
+        computed = ski_insights(self.db)
 
         prompt = self._load_prompt("post_ski").format(
             session_summary=_format_activity_summary(activity),
             runs_data=_format_ski_runs(runs),
-            recent_context="\n".join(prev_sessions) if prev_sessions else "No previous sessions",
+            computed_insights=computed,
         )
         return self._call_ai(prompt)
 
