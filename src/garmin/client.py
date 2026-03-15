@@ -107,6 +107,28 @@ class GarminClient:
             logger.warning("Failed to get body battery: %s", e)
             return None
 
+    def get_training_readiness(self, target_date: date | None = None) -> dict[str, Any] | None:
+        target_date = target_date or date.today()
+        try:
+            data = self.client.get_training_readiness(target_date.isoformat())
+            if not data:
+                return None
+            # API returns a list of readings; take the most recent one
+            latest = data[0]
+            return {
+                "score": latest.get("score"),
+                "level": latest.get("level"),
+                "recovery_time_hours": latest.get("recoveryTime"),
+                "acute_load": latest.get("acuteLoad"),
+                "sleep_score_factor": latest.get("sleepScoreFactorFeedback"),
+                "hrv_factor": latest.get("hrvFactorFeedback"),
+                "recovery_factor": latest.get("recoveryTimeFactorFeedback"),
+                "acwr_factor": latest.get("acwrFactorFeedback"),
+            }
+        except Exception as e:
+            logger.warning("Failed to get training readiness: %s", e)
+            return None
+
     def get_recent_activities(self, limit: int = 10) -> list[dict[str, Any]]:
         try:
             raw_activities = self.client.get_activities(0, limit)
@@ -153,6 +175,9 @@ def _normalize_activity(raw: dict[str, Any]) -> dict[str, Any]:
         "avg_hr": raw.get("averageHR"),
         "max_hr": raw.get("maxHR"),
         "calories": raw.get("calories"),
+        "aerobic_te": raw.get("aerobicTrainingEffect"),
+        "anaerobic_te": raw.get("anaerobicTrainingEffect"),
+        "training_load": raw.get("activityTrainingLoad"),
         "raw": raw,
     }
 

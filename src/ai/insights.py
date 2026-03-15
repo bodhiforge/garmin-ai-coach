@@ -251,6 +251,20 @@ def recovery_insights(db: Database) -> str:
 
     lines = ["## Recovery Analysis (computed)"]
 
+    # Garmin Training Readiness (authoritative when available)
+    latest = metrics[0]
+    tr_score = latest.get("training_readiness_score")
+    tr_level = latest.get("training_readiness_level")
+    recovery_hours = latest.get("recovery_time_hours")
+    acute_load = latest.get("acute_load")
+
+    if tr_score is not None:
+        lines.append(f"Garmin Training Readiness: {tr_score}/100 ({tr_level})")
+        if recovery_hours is not None and recovery_hours > 0:
+            lines.append(f"  Recovery time remaining: {recovery_hours}h")
+        if acute_load is not None:
+            lines.append(f"  Acute training load: {acute_load:.0f}")
+
     # HRV analysis
     if hrvs:
         avg_hrv = sum(hrvs) / len(hrvs)
@@ -287,22 +301,31 @@ def recovery_insights(db: Database) -> str:
     if bbs:
         lines.append(f"Body Battery: {bbs[0]}/100")
 
-    # Readiness verdict
+    # Readiness verdict — prefer Garmin Training Readiness when available
     lines.append("")
-    issues = []
-    if hrvs and ((hrvs[0] - sum(hrvs) / len(hrvs)) / (sum(hrvs) / len(hrvs)) * 100) < -10:
-        issues.append("HRV significantly below avg")
-    if sleeps and sleeps[0] < 360:
-        issues.append("sleep under 6h")
-    if rhrs and rhrs[0] - sum(rhrs) / len(rhrs) > 5:
-        issues.append("RHR elevated")
-
-    if not issues:
-        lines.append("Readiness: GOOD — ready for high intensity training")
-    elif len(issues) == 1:
-        lines.append(f"Readiness: MODERATE — {issues[0]}. Train but reduce intensity.")
+    if tr_score is not None:
+        if tr_score >= 65:
+            lines.append(f"Readiness: GOOD ({tr_score}/100) — ready for high intensity training")
+        elif tr_score >= 40:
+            lines.append(f"Readiness: MODERATE ({tr_score}/100) — train but reduce intensity")
+        else:
+            lines.append(f"Readiness: LOW ({tr_score}/100) — recovery day recommended")
     else:
-        lines.append(f"Readiness: LOW — {', '.join(issues)}. Recovery day recommended.")
+        # Fallback to our own HRV/sleep/RHR heuristic
+        issues = []
+        if hrvs and ((hrvs[0] - sum(hrvs) / len(hrvs)) / (sum(hrvs) / len(hrvs)) * 100) < -10:
+            issues.append("HRV significantly below avg")
+        if sleeps and sleeps[0] < 360:
+            issues.append("sleep under 6h")
+        if rhrs and rhrs[0] - sum(rhrs) / len(rhrs) > 5:
+            issues.append("RHR elevated")
+
+        if not issues:
+            lines.append("Readiness: GOOD — ready for high intensity training")
+        elif len(issues) == 1:
+            lines.append(f"Readiness: MODERATE — {issues[0]}. Train but reduce intensity.")
+        else:
+            lines.append(f"Readiness: LOW — {', '.join(issues)}. Recovery day recommended.")
 
     return "\n".join(lines)
 

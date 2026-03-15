@@ -26,6 +26,14 @@ class GarminSync:
 
         metrics = self.client.get_daily_metrics(target_date)
 
+        # Merge training readiness (separate API call)
+        readiness = self.client.get_training_readiness(target_date)
+        if readiness is not None:
+            metrics["training_readiness_score"] = readiness["score"]
+            metrics["training_readiness_level"] = readiness["level"]
+            metrics["recovery_time_hours"] = readiness["recovery_time_hours"]
+            metrics["acute_load"] = readiness["acute_load"]
+
         has_data = any(
             metrics.get(k) is not None
             for k in ("hrv_last_night", "sleep_duration_min", "resting_hr")

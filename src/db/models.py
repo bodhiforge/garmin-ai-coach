@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Generator
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -25,6 +25,10 @@ CREATE TABLE IF NOT EXISTS daily_metrics (
     stress_avg INTEGER,
     resting_hr INTEGER,
     spo2_avg REAL,
+    training_readiness_score INTEGER,
+    training_readiness_level TEXT,
+    recovery_time_hours INTEGER,
+    acute_load REAL,
     raw_json TEXT
 );
 
@@ -36,6 +40,9 @@ CREATE TABLE IF NOT EXISTS activities (
     avg_hr INTEGER,
     max_hr INTEGER,
     calories INTEGER,
+    aerobic_te REAL,
+    anaerobic_te REAL,
+    training_load REAL,
     summary_json TEXT,
     fit_file_path TEXT,
     raw_json TEXT
@@ -116,11 +123,39 @@ class Database:
             existing = conn.execute(
                 "SELECT version FROM schema_version ORDER BY version DESC LIMIT 1"
             ).fetchone()
+            current_version = existing["version"] if existing is not None else 0
+
+            if current_version < 2:
+                self._migrate_v2(conn)
+
             if existing is None:
                 conn.execute(
                     "INSERT INTO schema_version (version) VALUES (?)",
                     (SCHEMA_VERSION,),
                 )
+            elif current_version < SCHEMA_VERSION:
+                conn.execute(
+                    "UPDATE schema_version SET version = ? WHERE version = ?",
+                    (SCHEMA_VERSION, current_version),
+                )
+
+    @staticmethod
+    def _migrate_v2(conn: sqlite3.Connection) -> None:
+        """Add training readiness to daily_metrics, training effect to activities."""
+        new_columns = [
+            ("daily_metrics", "training_readiness_score", "INTEGER"),
+            ("daily_metrics", "training_readiness_level", "TEXT"),
+            ("daily_metrics", "recovery_time_hours", "INTEGER"),
+            ("daily_metrics", "acute_load", "REAL"),
+            ("activities", "aerobic_te", "REAL"),
+            ("activities", "anaerobic_te", "REAL"),
+            ("activities", "training_load", "REAL"),
+        ]
+        for table, column, col_type in new_columns:
+            try:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
 
     # -- Daily Metrics --
 
@@ -129,17 +164,23 @@ class Database:
             conn.execute(
                 """INSERT INTO daily_metrics
                    (date, hrv_weekly_avg, hrv_last_night, sleep_duration_min,
-                    sleep_score, body_battery_am, stress_avg, resting_hr, spo2_avg, raw_json)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    sleep_score, body_battery_am, stress_avg, resting_hr, spo2_avg,
+                    training_readiness_score, training_readiness_level,
+                    recovery_time_hours, acute_load, raw_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(date) DO UPDATE SET
-                    hrv_weekly_avg=excluded.hrv_weekly_avg,
-                    hrv_last_night=excluded.hrv_last_night,
-                    sleep_duration_min=excluded.sleep_duration_min,
-                    sleep_score=excluded.sleep_score,
-                    body_battery_am=excluded.body_battery_am,
-                    stress_avg=excluded.stress_avg,
-                    resting_hr=excluded.resting_hr,
-                    spo2_avg=excluded.spo2_avg,
+                    hrv_weekly_avg=COALESCE(excluded.hrv_weekly_avg, hrv_weekly_avg),
+                    hrv_last_night=COALESCE(excluded.hrv_last_night, hrv_last_night),
+                    sleep_duration_min=COALESCE(excluded.sleep_duration_min, sleep_duration_min),
+                    sleep_score=COALESCE(excluded.sleep_score, sleep_score),
+                    body_battery_am=COALESCE(excluded.body_battery_am, body_battery_am),
+                    stress_avg=COALESCE(excluded.stress_avg, stress_avg),
+                    resting_hr=COALESCE(excluded.resting_hr, resting_hr),
+                    spo2_avg=COALESCE(excluded.spo2_avg, spo2_avg),
+                    training_readiness_score=COALESCE(excluded.training_readiness_score, training_readiness_score),
+                    training_readiness_level=COALESCE(excluded.training_readiness_level, training_readiness_level),
+                    recovery_time_hours=COALESCE(excluded.recovery_time_hours, recovery_time_hours),
+                    acute_load=COALESCE(excluded.acute_load, acute_load),
                     raw_json=excluded.raw_json""",
                 (
                     metrics["date"],
@@ -151,6 +192,10 @@ class Database:
                     metrics.get("stress_avg"),
                     metrics.get("resting_hr"),
                     metrics.get("spo2_avg"),
+                    metrics.get("training_readiness_score"),
+                    metrics.get("training_readiness_level"),
+                    metrics.get("recovery_time_hours"),
+                    metrics.get("acute_load"),
                     json.dumps(metrics.get("raw"), ensure_ascii=False)
                     if metrics.get("raw")
                     else None,
@@ -186,11 +231,15 @@ class Database:
             conn.execute(
                 """INSERT INTO activities
                    (id, date, type, duration_min, avg_hr, max_hr, calories,
+                    aerobic_te, anaerobic_te, training_load,
                     summary_json, fit_file_path, raw_json)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                     summary_json=excluded.summary_json,
-                    fit_file_path=excluded.fit_file_path""",
+                    fit_file_path=excluded.fit_file_path,
+                    aerobic_te=COALESCE(excluded.aerobic_te, aerobic_te),
+                    anaerobic_te=COALESCE(excluded.anaerobic_te, anaerobic_te),
+                    training_load=COALESCE(excluded.training_load, training_load)""",
                 (
                     str(activity["id"]),
                     activity["date"],
@@ -199,6 +248,9 @@ class Database:
                     activity.get("avg_hr"),
                     activity.get("max_hr"),
                     activity.get("calories"),
+                    activity.get("aerobic_te"),
+                    activity.get("anaerobic_te"),
+                    activity.get("training_load"),
                     activity.get("summary_json"),
                     activity.get("fit_file_path"),
                     json.dumps(activity.get("raw"), ensure_ascii=False)
