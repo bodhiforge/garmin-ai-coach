@@ -1,0 +1,21 @@
+[project]
+name = "garmin-ai-coach"
+version = "0.1.0"
+description = "AI-powered training coach using Garmin FR955 data"
+requires-python = ">=3.10"
+dependencies = [
+    "garminconnect>=0.2.25",
+    "fitdecode>=0.10.0",
+    "openai>=1.0.0",
+    "pydantic-ai>=1.0.0",
+    "python-telegram-bot>=21.0",
+    "pyyaml>=6.0",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.34.0",
+]
+
+[project.optional-dependencies]
+dev = ["ruff", "pytest"]
+
+[project.scripts]
+garmin-coach = "src.main:main"

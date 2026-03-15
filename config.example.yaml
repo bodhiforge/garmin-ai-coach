@@ -1,0 +1,29 @@
+garmin:
+  email: "your-garmin-email@example.com"
+  password: "your-garmin-password"
+
+telegram:
+  bot_token: "your-telegram-bot-token"
+  chat_id: "your-chat-id"
+
+llm:
+  api_key: "your-api-key"
+  model: "gpt-4o"                # required — gpt-4o recommended for tool routing
+  # base_url: "https://..."      # optional: set for non-OpenAI providers
+  #
+  # Examples:
+  #   OpenAI:    model: "gpt-4o-mini"
+  #   Anthropic: model: "claude-haiku-4-5-20251001", base_url: "https://api.anthropic.com/v1/"
+  #   Gemini:    model: "gemini-2.0-flash", base_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
+  #   OpenRouter: model: "google/gemini-2.0-flash-001", base_url: "https://openrouter.ai/api/v1"
+  #   Local:     model: "llama3", base_url: "http://localhost:11434/v1"
+
+coach:
+  morning_push_hour: 7
+  sync_interval_min: 30
+  # HR-based rest defaults
+  resting_hr_override: null  # auto-detect from Garmin if null
+  hr_target:
+    strength: 20      # resting_hr + this value
+    hypertrophy: 40
+    endurance: 50
