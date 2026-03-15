@@ -1,0 +1,21 @@
+<settings>
+    <setting propertyKey="@Properties.mode" title="Training Mode">
+        <settingConfig type="list">
+            <listEntry value="0">Strength (full recovery)</listEntry>
+            <listEntry value="1">Hypertrophy (partial recovery)</listEntry>
+            <listEntry value="2">Endurance (minimal rest)</listEntry>
+        </settingConfig>
+    </setting>
+
+    <setting propertyKey="@Properties.strengthTarget" title="Strength: target HR (bpm)">
+        <settingConfig type="numeric" min="60" max="180" />
+    </setting>
+
+    <setting propertyKey="@Properties.hypertrophyTarget" title="Hypertrophy: target HR (bpm)">
+        <settingConfig type="numeric" min="60" max="180" />
+    </setting>
+
+    <setting propertyKey="@Properties.enduranceTarget" title="Endurance: target HR (bpm)">
+        <settingConfig type="numeric" min="60" max="180" />
+    </setting>
+</settings>

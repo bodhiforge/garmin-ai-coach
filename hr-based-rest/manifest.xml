@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<iq:manifest xmlns:iq="http://www.garmin.com/xml/connectiq" version="5">
+    <iq:application
+        id="69dda070-8325-48b8-94d3-d10aeed108cf"
+        type="datafield"
+        name="@Strings.AppName"
+        entry="HRRestFieldApp"
+        launcherIcon="@Drawables.LauncherIcon"
+        minSdkVersion="4.2.0">
+
+        <iq:products>
+            <iq:product id="fr955" />
+        </iq:products>
+
+        <iq:permissions>
+            <iq:uses-permission id="Sensor" />
+            <iq:uses-permission id="UserProfile" />
+        </iq:permissions>
+
+        <iq:languages>
+            <iq:language>eng</iq:language>
+            <iq:language>zhs</iq:language>
+        </iq:languages>
+    </iq:application>
+</iq:manifest>

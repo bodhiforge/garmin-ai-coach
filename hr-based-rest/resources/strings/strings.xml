@@ -1,0 +1,9 @@
+<strings>
+    <string id="AppName">HR Rest</string>
+    <string id="ModeStrength">Strength</string>
+    <string id="ModeHypertrophy">Hypertrophy</string>
+    <string id="ModeEndurance">Endurance</string>
+    <string id="StatusResting">RESTING</string>
+    <string id="StatusReady">GO!</string>
+    <string id="StatusActive">ACTIVE</string>
+</strings>

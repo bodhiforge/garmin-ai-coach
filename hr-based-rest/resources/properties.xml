@@ -1,0 +1,8 @@
+<properties>
+    <!-- 0=Strength, 1=Hypertrophy, 2=Endurance -->
+    <property id="mode" type="number">0</property>
+    <!-- Target HR for each mode (absolute bpm) -->
+    <property id="strengthTarget" type="number">120</property>
+    <property id="hypertrophyTarget" type="number">140</property>
+    <property id="enduranceTarget" type="number">150</property>
+</properties>
