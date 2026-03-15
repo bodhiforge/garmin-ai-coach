@@ -79,20 +79,17 @@ class CoachBot:
 
         logger.info("Message: %s", user_text[:80])
 
-        # Handle push confirmation
-        if conv.pending_push is not None and user_text.lower().strip() in (
-            "confirm", "yes", "ok", "sure", "do it", "go", "y"
-        ):
-            await self._confirm_push(update, conv)
-            return
-
-        # Cancel pending push if user says something else
-        if conv.pending_push is not None and user_text.lower().strip() in (
-            "cancel", "no", "nah", "nevermind"
-        ):
-            conv.pending_push = None
-            await update.message.reply_text("Cancelled.")
-            return
+        # Handle pending push — let AI classify intent
+        if conv.pending_push is not None:
+            intent = await self._classify_push_intent(user_text)
+            if intent == "confirm":
+                await self._confirm_push(update, conv)
+                return
+            elif intent == "cancel":
+                conv.pending_push = None
+                await update.message.reply_text("Cancelled.")
+                return
+            # "change" → falls through to agent.run below
 
         try:
             result = await coach_agent.run(
@@ -124,6 +121,23 @@ class CoachBot:
         except Exception as e:
             logger.error("Agent failed: %s", e)
             await update.message.reply_text(f"Error: {e}")
+
+    async def _classify_push_intent(self, text: str) -> str:
+        """Use LLM to classify: confirm, cancel, or change."""
+        response = self.coach.client.chat.completions.create(
+            model=self.coach.model,
+            max_tokens=10,
+            messages=[
+                {"role": "system", "content": "Classify the user's intent. A workout plan was just shown. Reply with exactly one word: confirm, cancel, or change."},
+                {"role": "user", "content": text},
+            ],
+        )
+        intent = response.choices[0].message.content.strip().lower()
+        if "confirm" in intent or "upload" in intent or "yes" in intent:
+            return "confirm"
+        elif "cancel" in intent or "no" in intent:
+            return "cancel"
+        return "change"
 
     async def _confirm_push(self, update: Update, conv) -> None:
         plan = conv.pending_push
