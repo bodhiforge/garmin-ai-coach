@@ -89,11 +89,12 @@ class CoachBot:
                 self.deps.pending_push = None
                 await update.message.reply_text("Cancelled.")
                 return
-            # "change" → falls through to agent.run below
+            else:
+                # "change" — modify pending plan inline, stay in push flow
+                await self._change_pending(update, user_text)
+                return
 
         try:
-            # Reset pending before each run
-            self.deps.pending_push = None
 
             result = await coach_agent.run(
                 user_text,
@@ -133,6 +134,21 @@ class CoachBot:
         elif "cancel" in intent or "no" in intent:
             return "cancel"
         return "change"
+
+    async def _change_pending(self, update: Update, user_text: str) -> None:
+        """Modify pending workout plan based on user feedback."""
+        await update.message.chat.send_action("typing")
+        updated = self.coach.update_workout_plan(self.deps.pending_push, user_text)
+        if updated is not None:
+            self.deps.pending_push = updated
+            text = format_plan_text(updated)
+            await update.message.reply_text(
+                f"{text}\nUpdated. Confirm or tell me what else to change."
+            )
+        else:
+            await update.message.reply_text(
+                "Couldn't parse that change. Try again or say 'cancel'."
+            )
 
     async def _confirm_push(self, update: Update) -> None:
         plan = self.deps.pending_push
