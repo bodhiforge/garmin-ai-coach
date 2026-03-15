@@ -1,0 +1,8 @@
+<settings>
+    <setting propertyKey="@Properties.serverUrl" title="Server URL">
+        <settingConfig type="alphaNumeric" />
+    </setting>
+    <setting propertyKey="@Properties.apiToken" title="API Token">
+        <settingConfig type="alphaNumeric" />
+    </setting>
+</settings>

@@ -1,0 +1,4 @@
+<properties>
+    <property id="serverUrl" type="string">https://your-server.example.com</property>
+    <property id="apiToken" type="string">your-api-token</property>
+</properties>
