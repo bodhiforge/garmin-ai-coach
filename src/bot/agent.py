@@ -29,13 +29,13 @@ MAX_HISTORY = 20  # Keep last N messages to prevent token bloat
 class CoachDeps:
     coach: AICoach
     sync: GarminSync
+    pending_push: dict | None = None  # Set by push_workout tool
 
 
 @dataclass
 class ConversationState:
     """Per-chat conversation state."""
     history: list[ModelMessage] = field(default_factory=list)
-    pending_push: dict | None = None  # Plan waiting for confirmation
 
 
 # Global conversation states keyed by chat_id
@@ -135,11 +135,9 @@ def push_workout(ctx: RunContext[CoachDeps], focus: str = "") -> str:
     if plan is None:
         return "Failed to generate structured plan."
 
-    # Store as pending — don't upload yet
-    # The pending plan is stored via a side channel (conversation state)
-    # We return a marker that telegram.py will intercept
     text = format_plan_text(plan)
-    return f"PENDING_PUSH:{json.dumps(plan)}\n{text}\n\nLook good? Say 'confirm' to upload to Garmin, or tell me what to change."
+    ctx.deps.pending_push = plan
+    return f"{text}\nReady to upload. Confirm or tell me what to change."
 
 
 @coach_agent.tool

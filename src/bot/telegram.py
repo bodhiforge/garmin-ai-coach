@@ -80,18 +80,21 @@ class CoachBot:
         logger.info("Message: %s", user_text[:80])
 
         # Handle pending push — let AI classify intent
-        if conv.pending_push is not None:
+        if self.deps.pending_push is not None:
             intent = await self._classify_push_intent(user_text)
             if intent == "confirm":
-                await self._confirm_push(update, conv)
+                await self._confirm_push(update)
                 return
             elif intent == "cancel":
-                conv.pending_push = None
+                self.deps.pending_push = None
                 await update.message.reply_text("Cancelled.")
                 return
             # "change" → falls through to agent.run below
 
         try:
+            # Reset pending before each run
+            self.deps.pending_push = None
+
             result = await coach_agent.run(
                 user_text,
                 deps=self.deps,
@@ -102,14 +105,6 @@ class CoachBot:
             conv.history = result.all_messages()[-MAX_HISTORY:]
 
             response = result.output
-
-            # Check for pending push marker
-            if "PENDING_PUSH:" in response:
-                marker_line = [l for l in response.split("\n") if l.startswith("PENDING_PUSH:")][0]
-                plan_json = marker_line.replace("PENDING_PUSH:", "")
-                conv.pending_push = json.loads(plan_json)
-                # Remove marker from display
-                response = response.replace(marker_line + "\n", "")
 
             # Send response (respect Telegram 4096 limit)
             if len(response) > 4000:
@@ -139,9 +134,9 @@ class CoachBot:
             return "cancel"
         return "change"
 
-    async def _confirm_push(self, update: Update, conv) -> None:
-        plan = conv.pending_push
-        conv.pending_push = None
+    async def _confirm_push(self, update: Update) -> None:
+        plan = self.deps.pending_push
+        self.deps.pending_push = None
 
         await update.message.chat.send_action("typing")
 
