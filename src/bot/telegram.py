@@ -138,10 +138,17 @@ class CoachBot:
         plan = self.deps.pending_push
         self.deps.pending_push = None
 
+        if plan is None:
+            await update.message.reply_text("No pending plan found. Try pushing again.")
+            return
+
         await update.message.chat.send_action("typing")
+        logger.info("Confirming push: %s (%d exercises)", plan.get("name", "?"), len(plan.get("exercises", [])))
 
         try:
+            logger.info("Plan to upload: %s", json.dumps(plan, default=str)[:200])
             result = upload_workout(self.sync.client, plan)
+            logger.info("Upload result: %s", result)
             if result is not None:
                 tracker = load_workout_tracker(self.sync.db.db_path.parent)
                 tracker[result] = plan
@@ -150,9 +157,10 @@ class CoachBot:
                     f"Uploaded '{plan.get('name', 'workout')}' to Garmin! Sync your watch."
                 )
             else:
+                logger.error("Upload returned None for plan: %s", plan.get("name"))
                 await update.message.reply_text("Upload failed. Try again.")
         except Exception as e:
-            logger.error("Push confirm failed: %s", e)
+            logger.error("Push confirm failed: %s", e, exc_info=True)
             await update.message.reply_text(f"Upload error: {e}")
 
     async def send_message(self, text: str) -> None:
