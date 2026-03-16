@@ -19,3 +19,4 @@ dev = ["ruff", "pytest"]
 
 [project.scripts]
 garmin-coach = "src.main:main"
+garmin-onboard = "src.setup:run_setup"

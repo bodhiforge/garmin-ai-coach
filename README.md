@@ -86,10 +86,12 @@ cd garmin-ai-coach
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
-python -m src.main setup
+garmin-onboard
 ```
 
 The setup wizard walks you through connecting Garmin, creating a Telegram bot, choosing an LLM provider, and setting up your training profile. It validates each step and auto-detects your Telegram chat ID.
+
+Also available as `garmin-coach setup` or `python -m src.main setup`.
 
 ### Manual Setup
 
