@@ -208,12 +208,29 @@ monkeyc -d fr955 -f monkey.jungle -o bin/hr-rest.prg -y ~/.ciq/developer_key.der
 - [x] Garmin Training Readiness and Training Effect
 - [x] Post-ski/gym auto-analysis in reflect
 - [x] Pre-ski briefing with run budget
+- [x] Interactive setup wizard (`garmin-onboard`)
 
-### Future (after data accumulation)
+### Next: Visual Feedback
+- [ ] **Trend charts** — matplotlib speed/volume/HRV charts sent as Telegram photos
+- [ ] **PR cards** — shareable achievement card on new personal records
+- [ ] **Weekly report** — auto-generated Sunday summary with charts + highlights
+
+### Next: Gamification
+- [ ] **Achievement system** — milestones ("Season max speed!", "10,000kg lifted this month")
+- [ ] **Streak tracking** — consecutive training days, early sleep streaks
+- [ ] **Challenges** — auto-generated weekly goals based on current level
+
+### Next: Smarter Coach
+- [ ] **Weather integration** — snow forecast + readiness → "powder day, go ski"
+- [ ] **Recovery prediction** — "ready for high intensity by Wednesday"
+- [ ] **Calendar awareness** — weekend ski trip → auto Friday early-sleep reminder
+- [ ] **Coach personality** — memory-aware humor, callbacks to past sessions, attitude
+- [ ] **Voice briefings** — TTS morning briefing as Telegram voice message
+
+### Next: Gym Depth (after data accumulation)
 - [ ] **Progressive Overload** — auto PR detection, plateau detection → suggest deload or exercise variation
 - [ ] **Workout auto-evolution** — post-training bot asks for feedback → AI updates Garmin workout
 - [ ] **Training periodization** — weekly/monthly volume stats, overtraining detection, deload suggestions
-- [ ] **Data visualization** — matplotlib charts sent to Telegram (speed trends, volume charts)
 
 ## Device Compatibility
 
