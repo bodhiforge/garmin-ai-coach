@@ -395,3 +395,11 @@ class Database:
         from datetime import datetime as dt
         last_time = dt.fromisoformat(last["timestamp"])
         return (dt.now() - last_time).total_seconds() / 3600
+
+    def get_notifications_since(self, since_date: str) -> list[dict[str, Any]]:
+        with self._connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM notifications WHERE timestamp >= ? ORDER BY timestamp",
+                (since_date,),
+            ).fetchall()
+            return [dict(r) for r in rows]
