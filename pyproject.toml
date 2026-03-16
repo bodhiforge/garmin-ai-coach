@@ -17,6 +17,9 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["ruff", "pytest"]
 
+[tool.setuptools.packages.find]
+include = ["src*"]
+
 [project.scripts]
 garmin-coach = "src.main:main"
 garmin-onboard = "src.setup:run_setup"
