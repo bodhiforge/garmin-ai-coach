@@ -180,6 +180,24 @@ def cmd_impact(args: argparse.Namespace) -> None:
     print(report)
 
 
+def cmd_whoami(args: argparse.Namespace) -> None:
+    """Show computed user model — what the system knows about you."""
+    _, db, _, sync, _, _ = build_components(args.config)
+
+    sync.sync_daily_metrics()
+    sync.sync_activities()
+
+    from .ai.user_model import build_user_model
+    from .ai.anomaly import detect_anomalies, format_anomalies
+
+    model = build_user_model(db)
+    print(model)
+
+    anomalies = detect_anomalies(db)
+    if anomalies:
+        print(f"\n{format_anomalies(anomalies)}")
+
+
 def _build_activity_analysis(
     events: list[str], db: Database, coach: AICoach,
 ) -> tuple[str | None, bytes | None]:
@@ -241,6 +259,12 @@ def _run_reflect(sync: GarminSync, coach: AICoach, bot, *, dry_run: bool) -> Non
     if new_obs:
         for obs in new_obs:
             print(f"New observation: {obs}")
+
+    # Open-ended anomaly detection
+    from .ai.anomaly import detect_anomalies
+    anomalies = detect_anomalies(sync.db)
+    for a in anomalies:
+        print(f"Anomaly: {a['description']}")
 
     # Check for new achievements
     from .ai.gamification import check_achievements
@@ -338,6 +362,9 @@ def main() -> None:
     impact_parser = subparsers.add_parser("impact", help="Coach effectiveness report")
     impact_parser.add_argument("--days", type=int, default=30, help="Report period in days")
 
+    # whoami — computed user model
+    subparsers.add_parser("whoami", help="What the system knows about you")
+
     # setup — interactive setup wizard
     subparsers.add_parser("setup", help="Interactive setup wizard for new users")
 
@@ -357,6 +384,7 @@ def main() -> None:
         "reflect": cmd_reflect,
         "weekly": cmd_weekly,
         "impact": cmd_impact,
+        "whoami": cmd_whoami,
     }
 
     commands[args.command](args)
