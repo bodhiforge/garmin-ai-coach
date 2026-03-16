@@ -146,6 +146,28 @@ def cmd_analyze(args: argparse.Namespace) -> None:
         print("No detailed data available for this activity.")
 
 
+def cmd_weekly(args: argparse.Namespace) -> None:
+    """Generate and send weekly training report."""
+    _, _, _, sync, coach, bot = build_components(args.config)
+
+    sync.sync_daily_metrics()
+    sync.sync_activities()
+
+    from .ai.weekly_report import generate_weekly_report
+    chart_bytes, message = generate_weekly_report(sync.db, coach)
+
+    print(message)
+    if chart_bytes:
+        print("(chart generated)")
+
+    if not args.dry_run:
+        if chart_bytes:
+            asyncio.run(bot.send_photo(chart_bytes, message))
+        else:
+            asyncio.run(bot.send_message(message))
+        print("Sent to Telegram.")
+
+
 def _build_activity_analysis(
     events: list[str], db: Database, coach: AICoach,
 ) -> tuple[str | None, bytes | None]:
@@ -280,6 +302,10 @@ def main() -> None:
     reflect_parser = subparsers.add_parser("reflect", help="Self-reflect, update memory, send proactive messages")
     reflect_parser.add_argument("--dry-run", action="store_true", help="Print only, don't send")
 
+    # weekly — weekly training report
+    weekly_parser = subparsers.add_parser("weekly", help="Weekly training report with chart")
+    weekly_parser.add_argument("--dry-run", action="store_true", help="Print only, don't send")
+
     # setup — interactive setup wizard
     subparsers.add_parser("setup", help="Interactive setup wizard for new users")
 
@@ -297,6 +323,7 @@ def main() -> None:
         "morning": cmd_morning,
         "analyze": cmd_analyze,
         "reflect": cmd_reflect,
+        "weekly": cmd_weekly,
     }
 
     commands[args.command](args)
