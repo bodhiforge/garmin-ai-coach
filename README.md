@@ -20,24 +20,61 @@ garmin-onboard
 
 The wizard validates your Garmin login, creates a Telegram bot, picks an LLM provider, and sets up your profile. 5 minutes.
 
-## What It Does
+## How the Agent Works
 
-### Talk to it on Telegram
+When you send a message, this happens:
 
-Just chat naturally. The bot has 11 tools it calls based on what you say:
+```
+You: "How's my skiing going?"
+                │
+    ┌───────────▼───────────┐
+    │   Context Injection    │  Reads soul.md, profile.md, observations.md
+    │                        │  Fetches today's HRV/sleep/BB from DB
+    │                        │  Lists recent activities
+    └───────────┬───────────┘
+                │
+    ┌───────────▼───────────┐
+    │   PydanticAI Agent     │  LLM sees context + 11 available tools
+    │   (gpt-4o)             │  Decides: this needs get_insights("ski")
+    └───────────┬───────────┘  AND show_chart("ski")
+                │
+    ┌───────────▼───────────┐
+    │   get_insights("ski")  │  Python computes: speed trend, plateau
+    │                        │  detection, fatigue pattern, bottleneck
+    │                        │  analysis. Returns pre-computed text.
+    ├────────────────────────┤
+    │   show_chart("ski")    │  matplotlib generates speed trend PNG
+    └───────────┬───────────┘
+                │
+    ┌───────────▼───────────┐
+    │   LLM Presents         │  Combines computed insights + observations
+    │                        │  into natural language with personality.
+    │                        │  "Speed's up 8% this month. But you're
+    │                        │   still fading after run 5 — that hasn't
+    │                        │   changed. Work on pacing, not volume."
+    └───────────┬───────────┘
+                │
+    ┌───────────▼───────────┐
+    │   Telegram             │  Text response + chart photo
+    └───────────────────────┘
+```
 
-| You say | Bot does |
-|---------|----------|
-| "What should I train today?" | Generates plan based on HRV, sleep, recent sessions |
-| "Push a pull day to my watch" | Creates structured workout → preview → confirm → uploads to Garmin |
-| "Bump bench to 45kg" | Modifies existing Garmin workout |
-| "How's my recovery?" | Shows HRV/sleep/readiness with computed verdict |
-| "Show me my ski speed trend" | Sends a matplotlib chart as photo |
-| "My achievements" | Shows unlocked achievements, streaks, current challenge |
-| "I switched to Anytime Fitness" | Updates memory — remembers for future sessions |
-| "What was my last leg workout?" | Searches memory and workout history |
+Key design: **Python computes every number. The LLM never does math.** It receives pre-computed insights and presents them in the coach's voice, referencing your history and behavioral patterns from `observations.md`.
 
-### Proactive push notifications
+### What you can say
+
+| You say | Agent calls | What happens |
+|---------|-------------|-------------|
+| "What should I train today?" | `generate_plan` | Syncs metrics, generates plan based on HRV + sleep + recent sessions |
+| "Push a pull day to my watch" | `push_workout` | LLM generates structured JSON → preview → confirm → upload to Garmin |
+| "Bump bench to 45kg" | `update_existing_workout` | Finds workout in tracker, LLM modifies, re-uploads to Garmin |
+| "How's my recovery?" | `show_status` | Python computes readiness verdict from HRV/sleep/RHR/Training Readiness |
+| "How's my skiing going?" | `get_insights` + `show_chart` | Python computes trends, matplotlib generates chart, LLM presents both |
+| "My achievements" | `show_achievements` | Shows unlocked/locked achievements, active streaks, current challenge |
+| "I switched to Anytime Fitness" | `update_memory` | LLM decides which memory file to update, merges info |
+| "What was my last leg workout?" | `search_memory` | Keyword search across memory files + workout tracker |
+
+### Proactive push (no user action needed)
 
 The bot doesn't wait for you to ask. A cron job (`reflect`) runs daily and:
 
