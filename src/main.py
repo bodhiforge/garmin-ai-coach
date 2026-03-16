@@ -168,6 +168,18 @@ def cmd_weekly(args: argparse.Namespace) -> None:
         print("Sent to Telegram.")
 
 
+def cmd_impact(args: argparse.Namespace) -> None:
+    """Generate coach effectiveness report."""
+    _, db, _, sync, _, _ = build_components(args.config)
+
+    sync.sync_daily_metrics()
+    sync.sync_activities()
+
+    from .ai.impact import impact_report
+    report = impact_report(db, days=args.days)
+    print(report)
+
+
 def _build_activity_analysis(
     events: list[str], db: Database, coach: AICoach,
 ) -> tuple[str | None, bytes | None]:
@@ -306,6 +318,10 @@ def main() -> None:
     weekly_parser = subparsers.add_parser("weekly", help="Weekly training report with chart")
     weekly_parser.add_argument("--dry-run", action="store_true", help="Print only, don't send")
 
+    # impact — coach effectiveness report
+    impact_parser = subparsers.add_parser("impact", help="Coach effectiveness report")
+    impact_parser.add_argument("--days", type=int, default=30, help="Report period in days")
+
     # setup — interactive setup wizard
     subparsers.add_parser("setup", help="Interactive setup wizard for new users")
 
@@ -324,6 +340,7 @@ def main() -> None:
         "analyze": cmd_analyze,
         "reflect": cmd_reflect,
         "weekly": cmd_weekly,
+        "impact": cmd_impact,
     }
 
     commands[args.command](args)
