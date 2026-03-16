@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 from ..db.models import Database
@@ -330,6 +330,84 @@ def recovery_insights(db: Database) -> str:
     return "\n".join(lines)
 
 
+def pre_ski_briefing(db: Database) -> str | None:
+    """If user skied in the last 2 days, return a run budget briefing. Otherwise None."""
+    recent_ski = db.get_recent_activities(days=2, activity_type="skiing")
+    if not recent_ski:
+        return None
+
+    latest = recent_ski[0]
+    days_since = (date.today() - date.fromisoformat(latest["date"])).days
+
+    # Get all season data for context
+    all_ski = db.get_recent_activities(days=365, activity_type="skiing")
+
+    # Count consecutive recent ski days
+    ski_dates = sorted(set(a["date"] for a in all_ski), reverse=True)
+    consecutive = 0
+    check_date = date.today()
+    for _ in range(7):
+        if str(check_date) in ski_dates or str(check_date - timedelta(days=0)) in ski_dates:
+            consecutive += 1
+        else:
+            break
+        check_date -= timedelta(days=1)
+    # Don't count today (hasn't happened yet)
+    consecutive = max(0, consecutive)
+
+    # Compute run budget from fatigue patterns
+    optimal_runs = None
+    for a in all_ski:
+        runs = db.get_ski_runs(a["id"])
+        if not runs or len(runs) < 3:
+            continue
+        run_speeds = [r.get("max_speed_kmh", 0) or 0 for r in runs]
+        peak_speed = max(run_speeds)
+        for i, speed in enumerate(run_speeds):
+            if i > 0 and speed < peak_speed * 0.85:
+                if optimal_runs is None or i < optimal_runs:
+                    optimal_runs = i
+                break
+
+    # Yesterday's fatigue
+    yesterday_fatigue = None
+    if days_since <= 1:
+        runs = db.get_ski_runs(latest["id"])
+        if runs and len(runs) >= 2:
+            run_speeds = [r.get("max_speed_kmh", 0) or 0 for r in runs]
+            mid = max(1, len(run_speeds) // 2)
+            first_avg = sum(run_speeds[:mid]) / mid
+            second_avg = sum(run_speeds[mid:]) / len(run_speeds[mid:])
+            if first_avg > 0:
+                yesterday_fatigue = (first_avg - second_avg) / first_avg * 100
+
+    lines = ["## Pre-Ski Briefing (consecutive skiing detected)"]
+
+    if days_since == 0:
+        lines.append(f"Already skied today.")
+    elif days_since == 1:
+        lines.append(f"Skied yesterday ({latest['date']}).")
+    else:
+        lines.append(f"Last ski: {latest['date']} ({days_since} days ago).")
+
+    if consecutive >= 2:
+        lines.append(f"⚠️ {consecutive} consecutive ski days — accumulated fatigue expected.")
+        lines.append("Reduce run count by 20-30% from your normal session.")
+
+    if optimal_runs is not None:
+        budget = optimal_runs
+        if consecutive >= 2:
+            budget = max(2, optimal_runs - 1)
+        lines.append(f"Run budget today: {budget} quality runs (performance typically drops after run {optimal_runs}).")
+    else:
+        lines.append("Not enough data to compute run budget yet.")
+
+    if yesterday_fatigue is not None and yesterday_fatigue > 10:
+        lines.append(f"Yesterday's fatigue: speed dropped {yesterday_fatigue:.0f}% in second half — start easy today.")
+
+    return "\n".join(lines)
+
+
 def daily_summary(db: Database) -> str:
     parts = [recovery_insights(db)]
 
@@ -337,6 +415,11 @@ def daily_summary(db: Database) -> str:
     if activities:
         types = [a["type"] for a in activities]
         parts.append(f"Last 7 days: {len(activities)} activities ({', '.join(set(types))})")
+
+    # Pre-ski briefing if consecutive skiing detected
+    ski_briefing = pre_ski_briefing(db)
+    if ski_briefing:
+        parts.append(ski_briefing)
 
     ski = db.get_recent_activities(days=30, activity_type="skiing")
     if ski:

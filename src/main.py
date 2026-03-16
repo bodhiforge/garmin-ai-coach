@@ -136,6 +136,33 @@ def cmd_analyze(args: argparse.Namespace) -> None:
         print("No detailed data available for this activity.")
 
 
+def _build_activity_analysis(
+    events: list[str], db: Database, coach: AICoach,
+) -> str | None:
+    """If events include a new activity, return full analysis. Otherwise None."""
+    ski_event = any("ski" in e.lower() for e in events)
+    gym_event = any("gym" in e.lower() for e in events)
+
+    if not ski_event and not gym_event:
+        return None
+
+    latest = db.get_recent_activities(days=2)
+    if not latest:
+        return None
+
+    activity = latest[0]
+    if ski_event and activity["type"] == "skiing":
+        runs = db.get_ski_runs(activity["id"])
+        if runs:
+            return coach.post_ski_analysis(activity, runs)
+    elif gym_event and activity["type"] == "strength":
+        sets = db.get_gym_sets(activity["id"])
+        if sets:
+            return coach.post_gym_analysis(activity, sets)
+
+    return None
+
+
 def cmd_reflect(args: argparse.Namespace) -> None:
     """Smart sync + event-driven notifications."""
     config, _, _, sync, coach, bot = build_components(args.config)
@@ -150,23 +177,25 @@ def cmd_reflect(args: argparse.Namespace) -> None:
     print(f"Events: {events} | Score: {score} | Send: {should_send}")
 
     if should_send:
-        # LLM only writes the message text, all decisions already made by Python
-        event_summary = "; ".join(events)
-        message = coach._call_ai(
-            "You are a concise fitness coach. Write a short Telegram notification (2-3 sentences) "
-            "about these events. Be direct, reference specific numbers. Do not add generic advice.",
-            event_summary,
-        )
+        # Check if there's a new activity — send full analysis instead of generic notification
+        message = _build_activity_analysis(events, sync.db, coach)
+        if message is None:
+            # No activity event — fall back to generic LLM notification for alerts
+            event_summary = "; ".join(events)
+            message = coach._call_ai(
+                "You are a concise fitness coach. Write a short Telegram notification (2-3 sentences) "
+                "about these events. Be direct, reference specific numbers. Do not add generic advice.",
+                event_summary,
+            )
         print(f"Message: {message}")
         if not args.dry_run:
             # Record each event type
             for event in events:
                 event_type = event.split(":")[0].strip().lower().replace(" ", "_")
                 if "activity" in event_type:
-                    # Use activity ID as type for dedup
                     activities = sync.db.get_recent_activities(days=1)
                     if activities:
-                        event_type = f"activity_{activities[0]["id"]}"
+                        event_type = f"activity_{activities[0]['id']}"
                 elif "pr" in event_type:
                     event_type = "ski_pr"
                 elif "hrv" in event_type:

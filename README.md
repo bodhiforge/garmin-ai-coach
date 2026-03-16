@@ -58,6 +58,12 @@ A daily cron job (`reflect` command) that:
 - Detects training patterns (frequency, progress, plateaus)
 - Records PRs and milestones to memory
 - Sends proactive Telegram messages when needed ("You haven't trained in 5 days — HRV is high, good day to go")
+- **Auto-analysis**: detects new ski/gym activity → sends full post-session analysis (not just a notification)
+
+### Ski Intelligence
+- **Pre-ski briefing**: morning briefing detects consecutive ski days → injects run budget, fatigue accumulation warning, and yesterday's fatigue data
+- **Post-ski auto-analysis**: reflect detects new ski session → sends full per-run breakdown with speed trends, fatigue pattern, bottleneck analysis, and actionable conclusions
+- **Season tracking**: speed progression, plateau detection, optimal session length, bottleneck identification (technique vs endurance vs recovery)
 
 ### HR-Based Rest (Connect IQ Data Field)
 A Garmin Data Field for strength training rest optimization:
@@ -167,6 +173,25 @@ cd hr-based-rest
 monkeyc -d fr955 -f monkey.jungle -o bin/hr-rest.prg -y ~/.ciq/developer_key.der -w
 # Copy hr-rest.prg to watch via USB/MTP → GARMIN/APPS/
 ```
+
+## Roadmap
+
+### Done
+- [x] PydanticAI agent with 8 tools + Telegram bot
+- [x] Computed insights layer (Python does the math, LLM presents)
+- [x] Garmin data sync (HRV, sleep, body battery, activities, FIT parsing)
+- [x] Workout upload to Garmin watch
+- [x] Memory system (AI-managed markdown)
+- [x] Event-driven notification system (Python scores urgency)
+- [x] Garmin Training Readiness and Training Effect
+- [x] Post-ski/gym auto-analysis in reflect
+- [x] Pre-ski briefing with run budget
+
+### Future (after data accumulation)
+- [ ] **Progressive Overload** — auto PR detection, plateau detection → suggest deload or exercise variation
+- [ ] **Workout auto-evolution** — post-training bot asks for feedback → AI updates Garmin workout
+- [ ] **Training periodization** — weekly/monthly volume stats, overtraining detection, deload suggestions
+- [ ] **Data visualization** — matplotlib charts sent to Telegram (speed trends, volume charts)
 
 ## Device Compatibility
 
