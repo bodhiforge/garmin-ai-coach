@@ -16,6 +16,7 @@ class GarminSync:
     def __init__(self, client: GarminClient, db: Database, data_dir: Path) -> None:
         self.client = client
         self.db = db
+        self.data_dir = data_dir
         self.fit_dir = data_dir / "fit_files"
         self.fit_dir.mkdir(parents=True, exist_ok=True)
 
