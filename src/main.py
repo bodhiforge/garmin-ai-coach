@@ -89,12 +89,22 @@ def cmd_morning(args: argparse.Namespace) -> None:
     config, _, _, sync, coach, bot = build_components(args.config)
 
     metrics = sync.sync_daily_metrics()
+    sync.sync_activities()
     briefing = coach.morning_briefing(metrics)
+
+    # Auto-attach recovery chart if enough data
+    from .ai.charts import recovery_chart
+    chart_bytes = recovery_chart(sync.db)
 
     print(briefing)
 
     if not args.dry_run:
-        asyncio.run(bot.send_message(briefing))
+        if chart_bytes:
+            asyncio.run(bot.send_photo(chart_bytes, briefing[:1024]))
+            if len(briefing) > 1024:
+                asyncio.run(bot.send_message(briefing))
+        else:
+            asyncio.run(bot.send_message(briefing))
         print("\nSent to Telegram.")
 
 
@@ -138,29 +148,35 @@ def cmd_analyze(args: argparse.Namespace) -> None:
 
 def _build_activity_analysis(
     events: list[str], db: Database, coach: AICoach,
-) -> str | None:
-    """If events include a new activity, return full analysis. Otherwise None."""
+) -> tuple[str | None, bytes | None]:
+    """If events include a new activity, return (analysis_text, chart_bytes)."""
+    from .ai.charts import ski_speed_chart, gym_volume_chart
+
     ski_event = any("ski" in e.lower() for e in events)
     gym_event = any("gym" in e.lower() for e in events)
 
     if not ski_event and not gym_event:
-        return None
+        return None, None
 
     latest = db.get_recent_activities(days=2)
     if not latest:
-        return None
+        return None, None
 
     activity = latest[0]
     if ski_event and activity["type"] == "skiing":
         runs = db.get_ski_runs(activity["id"])
         if runs:
-            return coach.post_ski_analysis(activity, runs)
+            text = coach.post_ski_analysis(activity, runs)
+            chart = ski_speed_chart(db)
+            return text, chart
     elif gym_event and activity["type"] == "strength":
         sets = db.get_gym_sets(activity["id"])
         if sets:
-            return coach.post_gym_analysis(activity, sets)
+            text = coach.post_gym_analysis(activity, sets)
+            chart = gym_volume_chart(db)
+            return text, chart
 
-    return None
+    return None, None
 
 
 def cmd_reflect(args: argparse.Namespace) -> None:
@@ -191,8 +207,8 @@ def _run_reflect(sync: GarminSync, coach: AICoach, bot, *, dry_run: bool) -> Non
     print(f"Events: {events} | Score: {score} | Send: {should_send}")
 
     if should_send:
-        # Check if there's a new activity — send full analysis instead of generic notification
-        message = _build_activity_analysis(events, sync.db, coach)
+        # Check if there's a new activity — send full analysis + chart
+        message, chart_bytes = _build_activity_analysis(events, sync.db, coach)
         if message is None:
             # No activity event — fall back to generic LLM notification for alerts
             event_summary = "; ".join(events)
@@ -201,6 +217,7 @@ def _run_reflect(sync: GarminSync, coach: AICoach, bot, *, dry_run: bool) -> Non
                 "about these events. Be direct, reference specific numbers. Do not add generic advice.",
                 event_summary,
             )
+            chart_bytes = None
         print(f"Message: {message}")
         if not dry_run:
             # Record each event type
@@ -219,7 +236,14 @@ def _run_reflect(sync: GarminSync, coach: AICoach, bot, *, dry_run: bool) -> Non
                 elif "training" in event_type or "inactive" in event_type:
                     event_type = "inactive"
                 sync.db.add_notification(event_type, message)
-            asyncio.run(bot.send_message(message))
+            # Send chart + text if available, otherwise text only
+            if chart_bytes:
+                asyncio.run(bot.send_photo(chart_bytes, message[:1024]))
+                # Send full text if it exceeds photo caption limit
+                if len(message) > 1024:
+                    asyncio.run(bot.send_message(message))
+            else:
+                asyncio.run(bot.send_message(message))
             print("Sent to Telegram.")
     else:
         print("Nothing to report.")
