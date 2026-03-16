@@ -235,6 +235,13 @@ def _run_reflect(sync: GarminSync, coach: AICoach, bot, *, dry_run: bool) -> Non
     sync.sync_daily_metrics()
     sync.sync_activities()
 
+    # Detect behavioral patterns and save to observations.md
+    from .ai.observations import detect_observations
+    new_obs = detect_observations(sync.db, coach.memory_dir)
+    if new_obs:
+        for obs in new_obs:
+            print(f"New observation: {obs}")
+
     # Event-driven notification (Python decides, LLM writes copy)
     from .ai.notify import should_notify
     should_send, events, score = should_notify(sync.db)
