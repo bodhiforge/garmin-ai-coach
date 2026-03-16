@@ -287,6 +287,13 @@ def show_chart(ctx: RunContext[CoachDeps], topic: str) -> str:
     return f"[CHART:{caption}] Chart generated. Here's a summary of what it shows."
 
 
+@coach_agent.tool
+def show_achievements(ctx: RunContext[CoachDeps]) -> str:
+    """Show achievements, streaks, and current challenge. Use when user asks about achievements, streaks, progress milestones, or challenges."""
+    from ..ai.gamification import format_achievements_text
+    return format_achievements_text(ctx.deps.sync.db, ctx.deps.sync.data_dir)
+
+
 # -- Helpers --
 
 def _find_workout(user_text: str, tracker: dict) -> tuple[str | None, dict | None]:
