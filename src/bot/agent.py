@@ -73,7 +73,8 @@ coach_agent = Agent(
         "- push_workout is ONLY for strength/gym workouts. For stretching, mobility, yoga, cardio: use generate_plan.\n"
         "- push_workout shows a preview first. The user must confirm before upload.\n"
         "- To answer questions about training progress, trends, or session analysis: use get_insights.\n"
-        "- When the user asks for a chart, graph, plot, or visual trend: use show_chart.\n"
+        "- PROACTIVELY use show_chart when your response involves trends, multiple sessions, or numeric comparisons. "
+        "Don't wait for the user to ask — if data is complex, a chart communicates better than text.\n"
         "- NEVER ignore the user's request. Match exactly what they asked for.\n"
         "- Only respond directly without tools for simple questions or casual chat."
     ),
