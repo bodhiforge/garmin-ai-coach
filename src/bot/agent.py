@@ -116,6 +116,11 @@ def inject_context(ctx: RunContext[CoachDeps]) -> str:
     profile = ctx.deps.coach.get_memory_file("profile")
     observations = ctx.deps.coach.get_memory_file("observations")
 
+    # Run anomaly detection for current context
+    from ..ai.anomaly import detect_anomalies, format_anomalies
+    anomalies = detect_anomalies(ctx.deps.sync.db)
+    anomaly_str = format_anomalies(anomalies) if anomalies else ""
+
     context = (
         f"## Coach Identity\n{soul}\n\n"
         f"## User Profile\n{profile}\n\n"
@@ -130,6 +135,12 @@ def inject_context(ctx: RunContext[CoachDeps]) -> str:
             f"\n\n## Behavioral Observations (data-verified patterns)\n{observations}\n"
             "IMPORTANT: Reference these observations in your advice. They are computed from "
             "actual data, not guesses. Use them to hold the user accountable and personalize advice."
+        )
+
+    if anomaly_str:
+        context += (
+            f"\n\n## Anomalies Detected Today\n{anomaly_str}\n"
+            "If any anomaly is relevant to the conversation, mention it proactively."
         )
 
     return context
