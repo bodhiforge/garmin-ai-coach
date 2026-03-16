@@ -1,240 +1,195 @@
 # Garmin AI Coach
 
-AI-powered training coach for Garmin watches. Uses biometric data (HRV, sleep, heart rate) + LLM analysis for personalized gym and sport coaching via Telegram.
+AI training coach that syncs your Garmin data, analyzes it with Python, and coaches you via Telegram. Not a dashboard — a coach that remembers, learns patterns, holds you accountable, and sends charts.
 
-## Architecture
-
-```
-Garmin Watch ──sync──▶ Garmin Connect ──API──▶ Your Server
-                                                   │
-                                          ┌────────┴────────┐
-                                          │   AI Coach       │
-                                          │  • Garmin data   │
-                                          │  • Memory system │
-                                          │  • LLM (OpenAI)  │
-                                          └────────┬────────┘
-                                                   │
-                                          ┌────────┴────────┐
-                                          │  Telegram Bot    │
-                                          │  • /plan         │
-                                          │  • /morning      │
-                                          │  • /memory       │
-                                          │  • Free chat     │
-                                          └─────────────────┘
-```
-
-## Features
-
-### AI Coaching via Telegram
-- `/plan` — AI-generated workout plan based on today's HRV, sleep, and training history
-- `/plan chest` — Plan for specific muscle groups
-- `/morning` — Daily briefing with body status and training recommendation
-- `/memory` — View/update persistent memory (profile, gym equipment, preferences)
-- `/sync` — Sync latest Garmin data
-- `/status` — Current health metrics
-- Free-form chat — ask anything about your training
-
-### Memory System
-AI-managed markdown files that persist across conversations. The bot remembers your profile, equipment, goals, and evolves over time.
+**Core idea:** Python does the math. LLM does the talking. Zero hallucinated numbers.
 
 ```
-data/memory/
-├── soul.md       # Coach personality and principles (customizable)
-├── profile.md    # Your info, goals, injuries, sport background
-├── gym.md        # Available equipment at your gym
-└── ...           # AI creates new files as needed
+Garmin Watch → Garmin Connect API → Python (compute insights) → LLM (present) → Telegram
 ```
 
-Update memory naturally via Telegram:
-```
-/memory I switched to Anytime Fitness, they have free barbells
-/memory left knee pain after snowboarding, avoid deep squats
-/memory my goal is lose 6kg by July
-```
-
-### Self-Evolution
-A daily cron job (`reflect` command) that:
-- Syncs Garmin data and reviews recent activity
-- Detects training patterns (frequency, progress, plateaus)
-- Records PRs and milestones to memory
-- Sends proactive Telegram messages when needed ("You haven't trained in 5 days — HRV is high, good day to go")
-- **Auto-analysis**: detects new ski/gym activity → sends full post-session analysis (not just a notification)
-
-### Ski Intelligence
-- **Pre-ski briefing**: morning briefing detects consecutive ski days → injects run budget, fatigue accumulation warning, and yesterday's fatigue data
-- **Post-ski auto-analysis**: reflect detects new ski session → sends full per-run breakdown with speed trends, fatigue pattern, bottleneck analysis, and actionable conclusions
-- **Season tracking**: speed progression, plateau detection, optimal session length, bottleneck identification (technique vs endurance vs recovery)
-
-### HR-Based Rest (Connect IQ Data Field)
-A Garmin Data Field for strength training rest optimization:
-- Vibrates when heart rate recovers to target
-- Three modes: Strength (120 bpm), Hypertrophy (140), Endurance (150)
-- Configurable target HR values
-- Works as an overlay on Garmin's native Strength Training activity
-
-### Post-Workout Analysis
-- Gym: cardiac drift detection, fatigue progression, recovery patterns
-- Skiing/Snowboarding: per-run speed + HR recovery trends, optimal stop point, season progression
-
-## Setup
-
-### Quick Start
+## Quick Start
 
 ```bash
 git clone https://github.com/bodhiforge/garmin-ai-coach.git
 cd garmin-ai-coach
-python3 -m venv .venv
-source .venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
 garmin-onboard
 ```
 
-The setup wizard walks you through connecting Garmin, creating a Telegram bot, choosing an LLM provider, and setting up your training profile. It validates each step and auto-detects your Telegram chat ID.
+The wizard validates your Garmin login, creates a Telegram bot, picks an LLM provider, and sets up your profile. 5 minutes.
 
-Also available as `garmin-coach setup` or `python -m src.main setup`.
+## What It Does
 
-### Manual Setup
+### Talk to it on Telegram
 
-<details>
-<summary>If you prefer to configure manually</summary>
+Just chat naturally. The bot has 11 tools it calls based on what you say:
 
-#### 1. Install
+| You say | Bot does |
+|---------|----------|
+| "What should I train today?" | Generates plan based on HRV, sleep, recent sessions |
+| "Push a pull day to my watch" | Creates structured workout → preview → confirm → uploads to Garmin |
+| "Bump bench to 45kg" | Modifies existing Garmin workout |
+| "How's my recovery?" | Shows HRV/sleep/readiness with computed verdict |
+| "Show me my ski speed trend" | Sends a matplotlib chart as photo |
+| "My achievements" | Shows unlocked achievements, streaks, current challenge |
+| "I switched to Anytime Fitness" | Updates memory — remembers for future sessions |
+| "What was my last leg workout?" | Searches memory and workout history |
+
+### Proactive push notifications
+
+The bot doesn't wait for you to ask. A cron job (`reflect`) runs daily and:
+
+1. **Syncs** latest Garmin data
+2. **Detects patterns** — writes to `observations.md` (fatigue after run 5, HRV drops when you ignore rest advice, speed is better after 7h+ sleep)
+3. **Checks achievements** — unlocks and notifies ("Speed Demon 40: Hit 40 km/h!")
+4. **Scores urgency** — new ski session? HRV declining 3 days? 5 days inactive?
+5. **Sends analysis** — new ski/gym activity gets a full breakdown with chart, not a generic "nice workout"
+
+### Morning briefing
+
+Cron sends a daily briefing with recovery chart:
+
+> GOOD to go. HRV 58, slept 7.5h — third night above 7h, nice streak. Day 2 of skiing though, remember you fade after run 5. Keep it tight.
+
+### The coach remembers
+
+AI-managed markdown files that evolve over time:
+
+| File | What's in it |
+|------|-------------|
+| `soul.md` | Coach personality — direct, occasionally sarcastic, data-backed |
+| `profile.md` | Your info, goals, injuries, sport history |
+| `observations.md` | **Data-driven patterns** (auto-detected, not LLM-guessed) |
+| `gym.md` | Equipment at your gym |
+
+Observations are the moat. Examples the system auto-detects:
+- "Ski fatigue pattern: speed drops after run 5 (seen in 6/8 sessions)"
+- "Trained on 3/4 low-readiness days — HRV dropped avg 12% next day"
+- "Ski speed averages 41.5 km/h after 7h+ sleep vs 38.2 after <7h"
+- "Most active on Sat, Sun. Never trains on Wednesday."
+
+The coach references these in every interaction for accountability.
+
+### Visual feedback
+
+| Feature | When |
+|---------|------|
+| **Trend charts** (ski speed, gym volume, recovery) | Proactive with analysis + on-demand in chat |
+| **PR achievement cards** | Auto-sent when you break a record |
+| **Weekly report** (4-panel chart + summary) | `garmin-coach weekly` on Sundays |
+
+### Gamification
+
+**14 achievements** — First Blood, Ski Rat (10 sessions), Speed Demon 30/40/50, Ton Lifter, Week Warrior, Comeback Kid, etc.
+
+**Streaks** — consecutive training days, sleep 7h+ nights, consecutive ski days.
+
+**Weekly challenge** — auto-generated from your current level: "Hit 42.1 km/h this week (current best: 40.6)".
+
+### Measure your own impact
 
 ```bash
-git clone https://github.com/bodhiforge/garmin-ai-coach.git
-cd garmin-ai-coach
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
+garmin-coach impact --days 30
 ```
 
-#### 2. Configure
+Pure numbers, no LLM. Shows whether the bot actually changed your behavior:
+- Run budget compliance (stopped before fatigue?)
+- Recovery compliance (rested on LOW days?)
+- Speed/weight progression
+- Sleep trend
+
+## Commands
+
+| Command | What | How to run |
+|---------|------|-----------|
+| `garmin-onboard` | Setup wizard | Once |
+| `garmin-coach bot` | Telegram bot | systemd service |
+| `garmin-coach morning` | Morning briefing + chart | Cron daily |
+| `garmin-coach reflect` | Sync → observe → achieve → notify | Cron daily |
+| `garmin-coach weekly` | Weekly report with chart | Cron Sundays |
+| `garmin-coach impact` | Coach effectiveness report | Manual |
+| `garmin-coach sync` | One-shot data sync | Manual |
+| `garmin-coach analyze` | Analyze latest activity | Manual |
+
+### Cron setup
 
 ```bash
-cp config.example.yaml config.yaml
+0 7 * * * /path/to/.venv/bin/garmin-coach morning
+0 12 * * * /path/to/.venv/bin/garmin-coach reflect
+0 20 * * * /path/to/.venv/bin/garmin-coach reflect
+0 10 * * 0 /path/to/.venv/bin/garmin-coach weekly
 ```
 
-Edit `config.yaml`:
+## Architecture
 
-```yaml
-garmin:
-  email: "your-garmin-email"
-  password: "your-garmin-password"
-
-telegram:
-  bot_token: "your-telegram-bot-token"  # Get from @BotFather
-  chat_id: "your-chat-id"              # Get by messaging the bot
-
-llm:
-  api_key: "your-api-key"
-  model: "gpt-4o-mini"
-  # base_url: null  # set for non-OpenAI providers
+```
+src/
+├── ai/
+│   ├── coach.py           # LLM interface, memory management
+│   ├── insights.py        # Computed analytics (ski, gym, recovery, pre-ski briefing)
+│   ├── observations.py    # Data-driven pattern detection (6 detectors)
+│   ├── gamification.py    # Achievements (14), streaks (3), challenges
+│   ├── charts.py          # matplotlib chart generation (3 chart types)
+│   ├── pr_card.py         # PR achievement card images
+│   ├── weekly_report.py   # Weekly summary chart + text
+│   ├── impact.py          # Coach effectiveness measurement
+│   ├── notify.py          # Event scoring + frequency control (5 event types)
+│   └── prompts/           # 9 LLM prompt templates
+├── bot/
+│   ├── agent.py           # PydanticAI agent with 11 tools
+│   └── telegram.py        # Telegram message handling + photo sending
+├── garmin/
+│   ├── client.py          # Garmin Connect API wrapper
+│   ├── sync.py            # Data sync orchestration
+│   ├── fit_parser.py      # FIT file parsing (gym sets, ski runs)
+│   └── workout.py         # Workout upload to Garmin
+├── db/models.py           # SQLite schema (8 tables)
+├── config.py              # YAML config
+├── setup.py               # Interactive onboarding wizard
+└── main.py                # CLI entry points (8 commands)
 ```
 
-Supported LLM providers (any OpenAI-compatible API):
+**Design principle:** Every number shown to the user is computed by Python, not estimated by the LLM. The LLM is a presenter, not an analyst.
+
+## LLM Providers
+
+Any OpenAI-compatible API works:
+
 | Provider | model | base_url |
 |----------|-------|----------|
-| OpenAI | `gpt-4o-mini` | (default) |
+| OpenAI | `gpt-4o` | (default) |
 | Gemini | `gemini-2.0-flash` | `https://generativelanguage.googleapis.com/v1beta/openai/` |
-| Anthropic | `claude-haiku-4-5-20251001` | `https://api.anthropic.com/v1/` |
 | OpenRouter | `google/gemini-2.0-flash-001` | `https://openrouter.ai/api/v1` |
 | Local (Ollama) | `llama3` | `http://localhost:11434/v1` |
-
-#### 3. Personalize
-
-Edit the memory files in `data/memory/`:
-
-- **`soul.md`** — Coach personality and training philosophy. Customize the tone, principles, and coaching style.
-- **`profile.md`** — Your personal info, training goals, injuries, sport background.
-- **`gym.md`** — Equipment available at your gym.
-
-Or update via Telegram: `/memory I have a home gym with dumbbells up to 50lb and a pull-up bar`
-
-#### 4. Run
-
-```bash
-# Sync Garmin data
-python -m src.main sync
-
-# Start Telegram bot
-python -m src.main bot
-
-# Morning briefing
-python -m src.main morning --dry-run
-
-# Self-reflection (run via cron)
-python -m src.main reflect --dry-run
-```
-
-#### 5. Cron Setup (Self-Evolution)
-
-```bash
-# Add to crontab — reflect twice daily
-0 7 * * * /path/to/garmin-ai-coach/.venv/bin/python -m src.main reflect
-0 20 * * * /path/to/garmin-ai-coach/.venv/bin/python -m src.main reflect
-```
-
-#### 6. Connect IQ Data Field (Optional)
-
-Requires [Connect IQ SDK](https://developer.garmin.com/connect-iq/sdk/):
-
-```bash
-brew install --cask connectiq
-brew install lindell/connect-iq-sdk-manager-cli/connect-iq-sdk-manager-cli
-
-# Generate developer key
-mkdir -p ~/.ciq
-openssl genrsa -out ~/.ciq/developer_key.pem 4096
-openssl pkcs8 -topk8 -inform PEM -outform DER \
-  -in ~/.ciq/developer_key.pem -out ~/.ciq/developer_key.der -nocrypt
-
-# Build and deploy
-cd hr-based-rest
-monkeyc -d fr955 -f monkey.jungle -o bin/hr-rest.prg -y ~/.ciq/developer_key.der -w
-# Copy hr-rest.prg to watch via USB/MTP → GARMIN/APPS/
-```
-
-</details>
 
 ## Roadmap
 
 ### Done
-- [x] PydanticAI agent with 8 tools + Telegram bot
-- [x] Computed insights layer (Python does the math, LLM presents)
-- [x] Garmin data sync (HRV, sleep, body battery, activities, FIT parsing)
-- [x] Workout upload to Garmin watch
-- [x] Memory system (AI-managed markdown)
-- [x] Event-driven notification system (Python scores urgency)
-- [x] Garmin Training Readiness and Training Effect
-- [x] Post-ski/gym auto-analysis in reflect
-- [x] Pre-ski briefing with run budget
-- [x] Interactive setup wizard (`garmin-onboard`)
+- PydanticAI agent (11 tools) + Telegram bot
+- Computed insights (ski speed/fatigue, gym volume/plateau, recovery)
+- Garmin data sync (HRV, sleep, body battery, activities, FIT parsing)
+- Workout upload to Garmin watch
+- Memory system (AI-managed markdown + observations)
+- Event-driven notifications with frequency control
+- Trend charts, PR cards, weekly reports
+- Achievement system, streaks, challenges
+- Coach personality with accountability
+- Impact measurement
+- Interactive setup wizard
 
-### Next: Visual Feedback
-- [ ] **Trend charts** — matplotlib speed/volume/HRV charts sent as Telegram photos
-- [ ] **PR cards** — shareable achievement card on new personal records
-- [ ] **Weekly report** — auto-generated Sunday summary with charts + highlights
-
-### Next: Gamification
-- [ ] **Achievement system** — milestones ("Season max speed!", "10,000kg lifted this month")
-- [ ] **Streak tracking** — consecutive training days, early sleep streaks
-- [ ] **Challenges** — auto-generated weekly goals based on current level
-
-### Next: Smarter Coach
-- [ ] **Weather integration** — snow forecast + readiness → "powder day, go ski"
-- [ ] **Recovery prediction** — "ready for high intensity by Wednesday"
-- [ ] **Calendar awareness** — weekend ski trip → auto Friday early-sleep reminder
-- [ ] **Coach personality** — memory-aware humor, callbacks to past sessions, attitude
+### Future
 - [ ] **Voice briefings** — TTS morning briefing as Telegram voice message
-
-### Next: Gym Depth (after data accumulation)
-- [ ] **Progressive Overload** — auto PR detection, plateau detection → suggest deload or exercise variation
-- [ ] **Workout auto-evolution** — post-training bot asks for feedback → AI updates Garmin workout
-- [ ] **Training periodization** — weekly/monthly volume stats, overtraining detection, deload suggestions
+- [ ] **Progressive Overload** — auto PR detection, plateau → deload suggestions
+- [ ] **Workout auto-evolution** — post-training feedback → AI updates Garmin workout
+- [ ] **Training periodization** — weekly/monthly volume, overtraining detection
 
 ## Device Compatibility
 
-Tested on Forerunner 955. Should work with any Garmin watch that syncs to Garmin Connect — the coaching happens server-side via Telegram. The Connect IQ Data Field requires a Connect IQ 4.2+ device.
+Tested on Forerunner 955. Works with any Garmin watch that syncs to Garmin Connect — coaching is server-side via Telegram.
+
+Optional: HR-Based Rest Connect IQ Data Field for strength training rest timing (see `hr-based-rest/`).
 
 ## License
 
