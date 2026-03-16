@@ -23,6 +23,25 @@ from .agent import coach_agent, CoachDeps, get_conversation, MAX_HISTORY
 
 logger = logging.getLogger(__name__)
 
+MAX_TELEGRAM_LENGTH = 4000
+
+
+def _split_message(text: str, limit: int = MAX_TELEGRAM_LENGTH) -> list[str]:
+    """Split long text at newline boundaries to avoid cutting mid-sentence."""
+    chunks = []
+    while text:
+        if len(text) <= limit:
+            chunks.append(text)
+            break
+        # Find last newline within limit
+        split_at = text.rfind("\n", 0, limit)
+        if split_at <= 0:
+            # No newline found — fall back to hard split
+            split_at = limit
+        chunks.append(text[:split_at])
+        text = text[split_at:].lstrip("\n")
+    return chunks
+
 
 class CoachBot:
     def __init__(
@@ -109,14 +128,16 @@ class CoachBot:
 
             # Send response (respect Telegram 4096 limit)
             if len(response) > 4000:
-                for i in range(0, len(response), 4000):
-                    await update.message.reply_text(response[i:i+4000])
+                for chunk in _split_message(response):
+                    await update.message.reply_text(chunk)
             else:
                 await update.message.reply_text(response)
 
         except Exception as e:
-            logger.error("Agent failed: %s", e)
-            await update.message.reply_text(f"Error: {e}")
+            logger.error("Agent failed: %s", e, exc_info=True)
+            await update.message.reply_text(
+                "Something went wrong. Try again in a moment."
+            )
 
     async def _classify_push_intent(self, text: str) -> str:
         """Use LLM to classify: confirm, cancel, or change."""
@@ -177,11 +198,17 @@ class CoachBot:
                 await update.message.reply_text("Upload failed. Try again.")
         except Exception as e:
             logger.error("Push confirm failed: %s", e, exc_info=True)
-            await update.message.reply_text(f"Upload error: {e}")
+            await update.message.reply_text(
+                "Upload to Garmin failed. Try again in a moment."
+            )
 
     async def send_message(self, text: str) -> None:
         bot = self.app.bot
-        await bot.send_message(chat_id=self.chat_id, text=text)
+        if len(text) > 4000:
+            for chunk in _split_message(text):
+                await bot.send_message(chat_id=self.chat_id, text=chunk)
+        else:
+            await bot.send_message(chat_id=self.chat_id, text=text)
 
     def run(self) -> None:
         logger.info("Starting Telegram bot...")

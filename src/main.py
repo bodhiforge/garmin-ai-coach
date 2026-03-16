@@ -167,6 +167,20 @@ def cmd_reflect(args: argparse.Namespace) -> None:
     """Smart sync + event-driven notifications."""
     config, _, _, sync, coach, bot = build_components(args.config)
 
+    try:
+        _run_reflect(sync, coach, bot, dry_run=args.dry_run)
+    except Exception as e:
+        logger.error("Reflect failed: %s", e, exc_info=True)
+        if not args.dry_run:
+            try:
+                asyncio.run(bot.send_message(f"⚠️ Coach reflect failed: {type(e).__name__}"))
+            except Exception:
+                pass
+        raise
+
+
+def _run_reflect(sync: GarminSync, coach: AICoach, bot, *, dry_run: bool) -> None:
+    """Core reflect logic, separated for error handling."""
     # Smart sync with merge
     sync.sync_daily_metrics()
     sync.sync_activities()
@@ -188,7 +202,7 @@ def cmd_reflect(args: argparse.Namespace) -> None:
                 event_summary,
             )
         print(f"Message: {message}")
-        if not args.dry_run:
+        if not dry_run:
             # Record each event type
             for event in events:
                 event_type = event.split(":")[0].strip().lower().replace(" ", "_")
