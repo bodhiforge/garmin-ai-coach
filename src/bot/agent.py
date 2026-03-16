@@ -100,11 +100,12 @@ def inject_context(ctx: RunContext[CoachDeps]) -> str:
         for a in recent
     ) if recent else "None"
 
-    # Read soul.md and profile.md directly (small, always relevant)
+    # Read soul.md, profile.md, and observations.md directly (small, always relevant)
     soul = ctx.deps.coach.get_memory_file("soul")
     profile = ctx.deps.coach.get_memory_file("profile")
+    observations = ctx.deps.coach.get_memory_file("observations")
 
-    return (
+    context = (
         f"## Coach Identity\n{soul}\n\n"
         f"## User Profile\n{profile}\n\n"
         f"## Today\n{metrics_str}\n\n"
@@ -112,6 +113,15 @@ def inject_context(ctx: RunContext[CoachDeps]) -> str:
         f"## Available Memory Files\n{', '.join(memory_files)}\n"
         f"(Use search_memory tool to look up details from any file)"
     )
+
+    if observations:
+        context += (
+            f"\n\n## Behavioral Observations (data-verified patterns)\n{observations}\n"
+            "IMPORTANT: Reference these observations in your advice. They are computed from "
+            "actual data, not guesses. Use them to hold the user accountable and personalize advice."
+        )
+
+    return context
 
 
 # -- Tools --
