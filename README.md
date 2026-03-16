@@ -78,7 +78,25 @@ A Garmin Data Field for strength training rest optimization:
 
 ## Setup
 
-### 1. Install
+### Quick Start
+
+```bash
+git clone https://github.com/bodhiforge/garmin-ai-coach.git
+cd garmin-ai-coach
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+python -m src.main setup
+```
+
+The setup wizard walks you through connecting Garmin, creating a Telegram bot, choosing an LLM provider, and setting up your training profile. It validates each step and auto-detects your Telegram chat ID.
+
+### Manual Setup
+
+<details>
+<summary>If you prefer to configure manually</summary>
+
+#### 1. Install
 
 ```bash
 git clone https://github.com/bodhiforge/garmin-ai-coach.git
@@ -88,7 +106,7 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-### 2. Configure
+#### 2. Configure
 
 ```bash
 cp config.example.yaml config.yaml
@@ -120,7 +138,7 @@ Supported LLM providers (any OpenAI-compatible API):
 | OpenRouter | `google/gemini-2.0-flash-001` | `https://openrouter.ai/api/v1` |
 | Local (Ollama) | `llama3` | `http://localhost:11434/v1` |
 
-### 3. Personalize
+#### 3. Personalize
 
 Edit the memory files in `data/memory/`:
 
@@ -130,7 +148,7 @@ Edit the memory files in `data/memory/`:
 
 Or update via Telegram: `/memory I have a home gym with dumbbells up to 50lb and a pull-up bar`
 
-### 4. Run
+#### 4. Run
 
 ```bash
 # Sync Garmin data
@@ -146,7 +164,7 @@ python -m src.main morning --dry-run
 python -m src.main reflect --dry-run
 ```
 
-### 5. Cron Setup (Self-Evolution)
+#### 5. Cron Setup (Self-Evolution)
 
 ```bash
 # Add to crontab — reflect twice daily
@@ -154,7 +172,7 @@ python -m src.main reflect --dry-run
 0 20 * * * /path/to/garmin-ai-coach/.venv/bin/python -m src.main reflect
 ```
 
-### 6. Connect IQ Data Field (Optional)
+#### 6. Connect IQ Data Field (Optional)
 
 Requires [Connect IQ SDK](https://developer.garmin.com/connect-iq/sdk/):
 
@@ -173,6 +191,8 @@ cd hr-based-rest
 monkeyc -d fr955 -f monkey.jungle -o bin/hr-rest.prg -y ~/.ciq/developer_key.der -w
 # Copy hr-rest.prg to watch via USB/MTP → GARMIN/APPS/
 ```
+
+</details>
 
 ## Roadmap
 

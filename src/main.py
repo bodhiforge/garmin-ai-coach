@@ -249,7 +249,16 @@ def main() -> None:
     reflect_parser = subparsers.add_parser("reflect", help="Self-reflect, update memory, send proactive messages")
     reflect_parser.add_argument("--dry-run", action="store_true", help="Print only, don't send")
 
+    # setup — interactive setup wizard
+    subparsers.add_parser("setup", help="Interactive setup wizard for new users")
+
     args = parser.parse_args()
+
+    # Setup doesn't need config — handle before build_components
+    if args.command == "setup":
+        from .setup import run_setup
+        run_setup()
+        return
 
     commands = {
         "bot": cmd_bot,
