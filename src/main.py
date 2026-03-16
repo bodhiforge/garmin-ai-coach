@@ -221,6 +221,13 @@ def _run_reflect(sync: GarminSync, coach: AICoach, bot, *, dry_run: bool) -> Non
                 sync.db.add_notification(event_type, message)
             asyncio.run(bot.send_message(message))
             print("Sent to Telegram.")
+
+            # Send PR cards if any
+            from .ai.pr_card import check_and_generate_pr
+            pr_cards = check_and_generate_pr(sync.db)
+            for card_bytes, caption in pr_cards:
+                asyncio.run(bot.send_photo(card_bytes, caption))
+                print(f"PR card sent: {caption}")
     else:
         print("Nothing to report.")
 

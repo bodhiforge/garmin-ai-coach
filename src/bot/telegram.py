@@ -210,6 +210,14 @@ class CoachBot:
         else:
             await bot.send_message(chat_id=self.chat_id, text=text)
 
+    async def send_photo(self, photo_bytes: bytes, caption: str = "") -> None:
+        bot = self.app.bot
+        await bot.send_photo(
+            chat_id=self.chat_id,
+            photo=photo_bytes,
+            caption=caption[:1024] if caption else None,
+        )
+
     def run(self) -> None:
         logger.info("Starting Telegram bot...")
         self.app.run_polling()
