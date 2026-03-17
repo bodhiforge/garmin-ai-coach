@@ -78,7 +78,7 @@ coach_agent = Agent(
         "- When the user shares personal info (gym, goals, injuries): ALWAYS use update_memory tool.\n"
         "- When the user asks about historical data or specific past info: use search_memory tool.\n"
         "- push_workout is ONLY for strength/gym workouts. For stretching, mobility, yoga, cardio: use generate_plan.\n"
-        "- push_workout shows a preview first. The user must confirm before upload.\n"
+        "- push_workout shows a preview. When the user confirms, use confirm_upload. When they cancel, use cancel_upload. When they want changes, modify and push_workout again.\n"
         "- To answer questions about training progress, trends, or session analysis: use get_insights.\n"
         "- PROACTIVELY use show_chart when your response involves trends, multiple sessions, or numeric comparisons. "
         "Don't wait for the user to ask — if data is complex, a chart communicates better than text.\n"
@@ -157,7 +157,7 @@ def generate_plan(ctx: RunContext[CoachDeps], focus: str = "") -> str:
 
 @coach_agent.tool
 def push_workout(ctx: RunContext[CoachDeps], focus: str = "") -> str:
-    """Generate a STRENGTH TRAINING workout preview for Garmin upload. Shows the plan first — user must say 'confirm' to actually upload. Only for strength/gym workouts."""
+    """Generate a STRENGTH TRAINING workout preview for Garmin upload. Shows the plan first — user must confirm before upload. Only for strength/gym workouts."""
     non_strength = ["stretch", "yoga", "mobility", "cardio", "recovery", "warm up", "cool down"]
     if any(kw in focus.lower() for kw in non_strength):
         return f"Can't push '{focus}' to Garmin — only strength workouts are supported. Here's a text plan instead:\n\n" + ctx.deps.coach.workout_plan(focus)
@@ -167,9 +167,36 @@ def push_workout(ctx: RunContext[CoachDeps], focus: str = "") -> str:
     if plan is None:
         return "Failed to generate structured plan."
 
+    if isinstance(plan, list):
+        plan = {"name": focus.title() + " Workout", "exercises": plan}
+
     text = format_plan_text(plan)
     ctx.deps.pending_push = plan
     return f"{text}\nReady to upload. Confirm or tell me what to change."
+
+
+@coach_agent.tool
+def confirm_upload(ctx: RunContext[CoachDeps]) -> str:
+    """Upload the pending workout to Garmin. Use when the user confirms they want to upload the workout that was just shown."""
+    plan = ctx.deps.pending_push
+    if plan is None:
+        return "No pending workout to upload. Use push_workout first."
+
+    ctx.deps.pending_push = None
+    result = upload_workout(ctx.deps.sync.client, plan)
+    if result is not None:
+        tracker = load_workout_tracker(ctx.deps.sync.db.db_path.parent)
+        tracker[result] = plan
+        save_workout_tracker(ctx.deps.sync.db.db_path.parent, tracker)
+        return f"Uploaded '{plan.get('name', 'workout')}' to Garmin. Sync your watch."
+    return "Upload to Garmin failed. Try again."
+
+
+@coach_agent.tool
+def cancel_upload(ctx: RunContext[CoachDeps]) -> str:
+    """Cancel the pending workout upload. Use when the user wants to stop or cancel."""
+    ctx.deps.pending_push = None
+    return "Cancelled."
 
 
 @coach_agent.tool

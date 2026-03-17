@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import os
 
@@ -15,10 +14,6 @@ from telegram.ext import (
 
 from ..ai.coach import AICoach
 from ..garmin.sync import GarminSync
-from ..garmin.workout import (
-    upload_workout, format_plan_text,
-    load_workout_tracker, save_workout_tracker,
-)
 from .agent import coach_agent, CoachDeps, get_conversation, MAX_HISTORY
 
 logger = logging.getLogger(__name__)
@@ -98,21 +93,6 @@ class CoachBot:
 
         logger.info("Message: %s", user_text[:80])
 
-        # Handle pending push — let AI classify intent
-        if self.deps.pending_push is not None:
-            intent = await self._classify_push_intent(user_text)
-            if intent == "confirm":
-                await self._confirm_push(update)
-                return
-            elif intent == "cancel":
-                self.deps.pending_push = None
-                await update.message.reply_text("Cancelled.")
-                return
-            else:
-                # "change" — modify pending plan inline, stay in push flow
-                await self._change_pending(update, user_text)
-                return
-
         try:
 
             result = await coach_agent.run(
@@ -143,68 +123,6 @@ class CoachBot:
                 "Something went wrong. Try again in a moment."
             )
 
-    async def _classify_push_intent(self, text: str) -> str:
-        """Use LLM to classify: confirm, cancel, or change."""
-        response = self.coach.client.chat.completions.create(
-            model=self.coach.model,
-            max_tokens=10,
-            messages=[
-                {"role": "system", "content": "A workout plan was just shown to the user. Classify their response: confirm, cancel, or change."},
-                {"role": "user", "content": text},
-            ],
-        )
-        intent = response.choices[0].message.content.strip().lower()
-        if "confirm" in intent or "upload" in intent or "yes" in intent:
-            return "confirm"
-        elif "cancel" in intent or "no" in intent:
-            return "cancel"
-        return "change"
-
-    async def _change_pending(self, update: Update, user_text: str) -> None:
-        """Modify pending workout plan based on user feedback."""
-        await update.message.chat.send_action("typing")
-        updated = self.coach.update_workout_plan(self.deps.pending_push, user_text)
-        if updated is not None:
-            self.deps.pending_push = updated
-            text = format_plan_text(updated)
-            await update.message.reply_text(
-                f"{text}\nUpdated. Confirm or tell me what else to change."
-            )
-        else:
-            await update.message.reply_text(
-                "Couldn't parse that change. Try again or say 'cancel'."
-            )
-
-    async def _confirm_push(self, update: Update) -> None:
-        plan = self.deps.pending_push
-        self.deps.pending_push = None
-
-        if plan is None:
-            await update.message.reply_text("No pending plan found. Try pushing again.")
-            return
-
-        await update.message.chat.send_action("typing")
-        logger.info("Confirming push: %s (%d exercises)", plan.get("name", "?"), len(plan.get("exercises", [])))
-
-        try:
-            logger.info("Plan to upload: %s", json.dumps(plan, default=str)[:200])
-            result = upload_workout(self.sync.client, plan)
-            logger.info("Upload result: %s", result)
-            if result is not None:
-                tracker = load_workout_tracker(self.sync.db.db_path.parent)
-                tracker[result] = plan
-                save_workout_tracker(self.sync.db.db_path.parent, tracker)
-                await update.message.reply_text(
-                    f"Uploaded '{plan.get('name', 'workout')}' to Garmin! Sync your watch."
-                )
-            else:
-                logger.error("Upload returned None for plan: %s", plan.get("name"))
-                await update.message.reply_text("Upload failed. Try again.")
-        except Exception as e:
-            logger.error("Push confirm failed: %s", e, exc_info=True)
-            await update.message.reply_text(
-                "Upload to Garmin failed. Try again in a moment."
-            )
 
     async def send_message(self, text: str) -> None:
         bot = self.app.bot
