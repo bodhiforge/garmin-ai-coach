@@ -149,7 +149,7 @@ class CoachBot:
             model=self.coach.model,
             max_tokens=10,
             messages=[
-                {"role": "system", "content": "Classify the user's intent. A workout plan was just shown. Reply with exactly one word: confirm, cancel, or change."},
+                {"role": "system", "content": "A workout plan was just shown to the user. Classify their response: confirm, cancel, or change."},
                 {"role": "user", "content": text},
             ],
         )
