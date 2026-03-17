@@ -229,15 +229,6 @@ def _run_reflect(sync: GarminSync, coach: AICoach, bot, *, dry_run: bool) -> Non
     for a in anomalies:
         print(f"Anomaly: {a['description']}")
 
-    # Check for new achievements
-    from .ai.gamification import check_achievements
-    new_achievements = check_achievements(sync.db, sync.data_dir)
-    for ach in new_achievements:
-        msg = f"🏆 Achievement Unlocked: {ach['name']}!\n{ach['description']}"
-        print(msg)
-        if not dry_run:
-            asyncio.run(bot.send_message(msg))
-
     # Event-driven notification (Python decides, LLM writes copy)
     from .ai.notify import should_notify
     should_send, events, score = should_notify(sync.db)

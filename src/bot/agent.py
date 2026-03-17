@@ -319,12 +319,6 @@ def update_memory(ctx: RunContext[CoachDeps], info: str) -> str:
 
 
 
-@coach_agent.tool
-def show_achievements(ctx: RunContext[CoachDeps]) -> str:
-    """Show achievements, streaks, and current challenge. Use when user asks about achievements, streaks, progress milestones, or challenges."""
-    from ..ai.gamification import format_achievements_text
-    return format_achievements_text(ctx.deps.sync.db, ctx.deps.sync.data_dir)
-
 
 # -- Helpers --
 
