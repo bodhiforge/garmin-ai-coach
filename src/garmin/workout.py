@@ -114,11 +114,39 @@ def _build_rest_step(rest_sec: int, order: int) -> dict[str, Any]:
     }
 
 
+def _fix_exercise_categories(plan: dict[str, Any], exercises_path: Path | None = None) -> dict[str, Any]:
+    """Fix mismatched category/exercise pairs using the exercises.json lookup."""
+    if exercises_path is None:
+        exercises_path = Path("data/exercises.json")
+    if not exercises_path.exists():
+        return plan
+
+    exercise_db = json.loads(exercises_path.read_text())
+
+    # Build reverse lookup: exercise_name -> correct category
+    exercise_to_category = {}
+    for category, exercises in exercise_db.items():
+        for ex_name in exercises:
+            exercise_to_category[ex_name] = category
+
+    fixed = {**plan, "exercises": []}
+    for ex in plan.get("exercises", []):
+        ex_name = ex.get("exercise", "")
+        correct_category = exercise_to_category.get(ex_name)
+        if correct_category and correct_category != ex.get("category"):
+            logger.info("Fixed category: %s -> %s (was %s)", ex_name, correct_category, ex.get("category"))
+            ex = {**ex, "category": correct_category}
+        fixed["exercises"].append(ex)
+
+    return fixed
+
+
 def upload_workout(client: GarminClient, plan: dict[str, Any]) -> str | None:
     """Build Garmin workout JSON from AI plan and upload it.
 
     Returns the workout ID if successful, None otherwise.
     """
+    plan = _fix_exercise_categories(plan)
     workout_json = build_workout_json(plan)
 
     try:
