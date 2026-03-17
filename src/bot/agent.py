@@ -11,7 +11,6 @@ from typing import Any
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.messages import ModelMessage
 
-from ..ai.charts import generate_chart
 from ..ai.insights import ski_insights, gym_insights, recovery_insights, daily_summary
 
 from ..ai.coach import AICoach
@@ -31,7 +30,6 @@ class CoachDeps:
     coach: AICoach
     sync: GarminSync
     pending_push: dict | None = None  # Set by push_workout tool
-    pending_chart: bytes | None = None  # Set by show_chart tool
 
 
 @dataclass
@@ -80,8 +78,6 @@ coach_agent = Agent(
         "- push_workout is ONLY for strength/gym workouts. For stretching, mobility, yoga, cardio: use generate_plan.\n"
         "- push_workout shows a preview. When the user confirms, use confirm_upload. When they cancel, use cancel_upload. When they want changes, modify and push_workout again.\n"
         "- To answer questions about training progress, trends, or session analysis: use get_insights.\n"
-        "- PROACTIVELY use show_chart when your response involves trends, multiple sessions, or numeric comparisons. "
-        "Don't wait for the user to ask — if data is complex, a chart communicates better than text.\n"
         "- NEVER ignore the user's request. Match exactly what they asked for.\n"
         "- Only respond directly without tools for simple questions or casual chat."
     ),
@@ -321,15 +317,6 @@ def update_memory(ctx: RunContext[CoachDeps], info: str) -> str:
     """Save information to memory. Use when the user shares personal info, changes gym, reports an injury, or sets new goals."""
     return ctx.deps.coach.update_memory(info)
 
-
-@coach_agent.tool
-def show_chart(ctx: RunContext[CoachDeps], topic: str) -> str:
-    """Generate a visual chart and send it as an image. Use when the user asks for a chart, graph, plot, trend visualization, or says 'show me'. Topics: 'ski' (speed trend), 'gym' (volume trend), 'recovery' (HRV/sleep/RHR), or 'all'."""
-    chart_bytes, caption = generate_chart(ctx.deps.sync.db, topic)
-    if chart_bytes is None:
-        return "Not enough data to generate a chart yet. Need at least 2-3 sessions."
-    ctx.deps.pending_chart = chart_bytes
-    return f"[CHART:{caption}] Chart generated. Here's a summary of what it shows."
 
 
 @coach_agent.tool

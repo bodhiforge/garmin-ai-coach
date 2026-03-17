@@ -92,19 +92,10 @@ def cmd_morning(args: argparse.Namespace) -> None:
     sync.sync_activities()
     briefing = coach.morning_briefing(metrics)
 
-    # Auto-attach recovery chart if enough data
-    from .ai.charts import recovery_chart
-    chart_bytes = recovery_chart(sync.db)
-
     print(briefing)
 
     if not args.dry_run:
-        if chart_bytes:
-            asyncio.run(bot.send_photo(chart_bytes, briefing[:1024]))
-            if len(briefing) > 1024:
-                asyncio.run(bot.send_message(briefing))
-        else:
-            asyncio.run(bot.send_message(briefing))
+        asyncio.run(bot.send_message(briefing))
         print("\nSent to Telegram.")
 
 
@@ -146,28 +137,6 @@ def cmd_analyze(args: argparse.Namespace) -> None:
         print("No detailed data available for this activity.")
 
 
-def cmd_weekly(args: argparse.Namespace) -> None:
-    """Generate and send weekly training report."""
-    _, _, _, sync, coach, bot = build_components(args.config)
-
-    sync.sync_daily_metrics()
-    sync.sync_activities()
-
-    from .ai.weekly_report import generate_weekly_report
-    chart_bytes, message = generate_weekly_report(sync.db, coach)
-
-    print(message)
-    if chart_bytes:
-        print("(chart generated)")
-
-    if not args.dry_run:
-        if chart_bytes:
-            asyncio.run(bot.send_photo(chart_bytes, message))
-        else:
-            asyncio.run(bot.send_message(message))
-        print("Sent to Telegram.")
-
-
 def cmd_impact(args: argparse.Namespace) -> None:
     """Generate coach effectiveness report."""
     _, db, _, sync, _, _ = build_components(args.config)
@@ -200,35 +169,29 @@ def cmd_whoami(args: argparse.Namespace) -> None:
 
 def _build_activity_analysis(
     events: list[str], db: Database, coach: AICoach,
-) -> tuple[str | None, bytes | None]:
-    """If events include a new activity, return (analysis_text, chart_bytes)."""
-    from .ai.charts import ski_speed_chart, gym_volume_chart
-
+) -> str | None:
+    """If events include a new activity, return full analysis text."""
     ski_event = any("ski" in e.lower() for e in events)
     gym_event = any("gym" in e.lower() for e in events)
 
     if not ski_event and not gym_event:
-        return None, None
+        return None
 
     latest = db.get_recent_activities(days=2)
     if not latest:
-        return None, None
+        return None
 
     activity = latest[0]
     if ski_event and activity["type"] == "skiing":
         runs = db.get_ski_runs(activity["id"])
         if runs:
-            text = coach.post_ski_analysis(activity, runs)
-            chart = ski_speed_chart(db)
-            return text, chart
+            return coach.post_ski_analysis(activity, runs)
     elif gym_event and activity["type"] == "strength":
         sets = db.get_gym_sets(activity["id"])
         if sets:
-            text = coach.post_gym_analysis(activity, sets)
-            chart = gym_volume_chart(db)
-            return text, chart
+            return coach.post_gym_analysis(activity, sets)
 
-    return None, None
+    return None
 
 
 def cmd_reflect(args: argparse.Namespace) -> None:
@@ -281,8 +244,8 @@ def _run_reflect(sync: GarminSync, coach: AICoach, bot, *, dry_run: bool) -> Non
     print(f"Events: {events} | Score: {score} | Send: {should_send}")
 
     if should_send:
-        # Check if there's a new activity — send full analysis + chart
-        message, chart_bytes = _build_activity_analysis(events, sync.db, coach)
+        # Check if there's a new activity — send full analysis
+        message = _build_activity_analysis(events, sync.db, coach)
         if message is None:
             # No activity event — fall back to generic LLM notification for alerts
             event_summary = "; ".join(events)
@@ -291,10 +254,8 @@ def _run_reflect(sync: GarminSync, coach: AICoach, bot, *, dry_run: bool) -> Non
                 "about these events. Be direct, reference specific numbers. Do not add generic advice.",
                 event_summary,
             )
-            chart_bytes = None
         print(f"Message: {message}")
         if not dry_run:
-            # Record each event type
             for event in events:
                 event_type = event.split(":")[0].strip().lower().replace(" ", "_")
                 if "activity" in event_type:
@@ -310,22 +271,8 @@ def _run_reflect(sync: GarminSync, coach: AICoach, bot, *, dry_run: bool) -> Non
                 elif "training" in event_type or "inactive" in event_type:
                     event_type = "inactive"
                 sync.db.add_notification(event_type, message)
-            # Send chart + text if available, otherwise text only
-            if chart_bytes:
-                asyncio.run(bot.send_photo(chart_bytes, message[:1024]))
-                # Send full text if it exceeds photo caption limit
-                if len(message) > 1024:
-                    asyncio.run(bot.send_message(message))
-            else:
-                asyncio.run(bot.send_message(message))
+            asyncio.run(bot.send_message(message))
             print("Sent to Telegram.")
-
-            # Send PR cards if any
-            from .ai.pr_card import check_and_generate_pr
-            pr_cards = check_and_generate_pr(sync.db)
-            for card_bytes, caption in pr_cards:
-                asyncio.run(bot.send_photo(card_bytes, caption))
-                print(f"PR card sent: {caption}")
     else:
         print("Nothing to report.")
 
@@ -354,10 +301,6 @@ def main() -> None:
     reflect_parser = subparsers.add_parser("reflect", help="Self-reflect, update memory, send proactive messages")
     reflect_parser.add_argument("--dry-run", action="store_true", help="Print only, don't send")
 
-    # weekly — weekly training report
-    weekly_parser = subparsers.add_parser("weekly", help="Weekly training report with chart")
-    weekly_parser.add_argument("--dry-run", action="store_true", help="Print only, don't send")
-
     # impact — coach effectiveness report
     impact_parser = subparsers.add_parser("impact", help="Coach effectiveness report")
     impact_parser.add_argument("--days", type=int, default=30, help="Report period in days")
@@ -382,7 +325,6 @@ def main() -> None:
         "morning": cmd_morning,
         "analyze": cmd_analyze,
         "reflect": cmd_reflect,
-        "weekly": cmd_weekly,
         "impact": cmd_impact,
         "whoami": cmd_whoami,
     }

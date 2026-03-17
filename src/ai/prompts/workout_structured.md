@@ -28,7 +28,7 @@ Generate a workout plan as a JSON array of exercises. Each exercise has:
 - `weight_kg`: weight in kg (null if bodyweight)
 - `rest_sec`: rest between sets in seconds
 
-Return ONLY valid JSON, no explanation. Example:
+CRITICAL: Return ONLY raw JSON. No explanation, no markdown, no commentary. Your entire response must be a valid JSON object. Example:
 ```json
 {{"name": "Push Day", "exercises": [{{"category": "BENCH_PRESS", "exercise": "SMITH_MACHINE_BENCH_PRESS", "sets": 4, "reps": 10, "weight_kg": 60, "rest_sec": 90}}, {{"category": "SHOULDER_PRESS", "exercise": "DUMBBELL_SHOULDER_PRESS", "sets": 3, "reps": 12, "weight_kg": 16, "rest_sec": 60}}]}}
 ```

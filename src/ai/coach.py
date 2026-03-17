@@ -320,11 +320,20 @@ class AICoach:
             cleaned = response.strip()
             if cleaned.startswith("```"):
                 cleaned = "\n".join(cleaned.split("\n")[1:])
-            if cleaned.endswith("```"):
-                cleaned = "\n".join(cleaned.split("\n")[:-1])
-            return json.loads(cleaned.strip())
-        except json.JSONDecodeError as e:
-            logger.error("Failed to parse workout JSON: %s\nResponse: %s", e, response[:200])
+                if cleaned.endswith("```"):
+                    cleaned = "\n".join(cleaned.split("\n")[:-1])
+            cleaned = cleaned.strip()
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            # Fallback: try to extract JSON object from response
+            import re
+            match = re.search(r'\{.*\}', response, re.DOTALL)
+            if match:
+                try:
+                    return json.loads(match.group())
+                except json.JSONDecodeError:
+                    pass
+            logger.error("Failed to parse workout JSON.\nResponse: %s", response[:300])
             return None
 
     def update_workout_plan(self, current_plan: dict, user_feedback: str) -> dict | None:

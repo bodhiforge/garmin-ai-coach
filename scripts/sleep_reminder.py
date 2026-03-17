@@ -21,19 +21,18 @@ mode = sys.argv[1] if len(sys.argv) > 1 else "warn"
 
 if mode == "warn":
     send(
-        "🔔 11:00 了。\n\n"
-        "收工时间到。保存好工作，准备关电脑。\n"
-        "⚠️ 11:30 MacP 会自动关机，不管你在干嘛。"
+        "🔔 11:00pm — time to wrap up.\n\n"
+        "Save your work and get ready to shut down.\n"
+        "⚠️ MacP will force shutdown at 11:30pm, no matter what."
     )
 elif mode == "sleep":
     send(
-        "🚨 12:30 了。\n\n"
-        "手机放下，去睡觉。\n"
-        "明天的事明天再说。"
+        "🚨 12:30am — put the phone down.\n\n"
+        "Go to sleep. Tomorrow's problems can wait."
     )
 elif mode == "shutdown":
     import subprocess
-    send("💀 11:30 到了。MacP 正在关机。")
+    send("💀 11:30pm — MacP is shutting down now.")
     subprocess.run([
         "ssh", "-o", "ConnectTimeout=5",
         "bosstation@100.102.71.47",

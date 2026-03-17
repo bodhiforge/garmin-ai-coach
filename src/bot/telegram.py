@@ -106,12 +106,7 @@ class CoachBot:
 
             response = result.output
 
-            # Send chart if generated
-            chart_bytes = self.deps.pending_chart
-            self.deps.pending_chart = None
-            if chart_bytes:
-                await update.message.reply_photo(photo=chart_bytes, caption=response[:1024])
-            elif len(response) > 4000:
+            if len(response) > 4000:
                 for chunk in _split_message(response):
                     await update.message.reply_text(chunk)
             else:
@@ -131,14 +126,6 @@ class CoachBot:
                 await bot.send_message(chat_id=self.chat_id, text=chunk)
         else:
             await bot.send_message(chat_id=self.chat_id, text=text)
-
-    async def send_photo(self, photo_bytes: bytes, caption: str = "") -> None:
-        bot = self.app.bot
-        await bot.send_photo(
-            chat_id=self.chat_id,
-            photo=photo_bytes,
-            caption=caption[:1024] if caption else None,
-        )
 
     def run(self) -> None:
         logger.info("Starting Telegram bot...")
