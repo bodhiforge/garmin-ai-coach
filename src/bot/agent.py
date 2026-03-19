@@ -9,11 +9,12 @@ from pathlib import Path
 from typing import Any
 
 from pydantic_ai import Agent, RunContext
-from pydantic_ai.messages import ModelMessage
+from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter
 
 from ..ai.insights import ski_insights, gym_insights, recovery_insights, daily_summary
 
 from ..ai.coach import AICoach
+from ..db.models import Database
 from ..garmin.sync import GarminSync
 from ..garmin.workout import (
     upload_workout, update_workout, format_plan_text,
@@ -23,6 +24,9 @@ from ..garmin.workout import (
 logger = logging.getLogger(__name__)
 
 MAX_HISTORY = 20  # Keep last N messages to prevent token bloat
+
+# Adapter for serializing/deserializing PydanticAI messages
+_messages_adapter = ModelMessagesTypeAdapter
 
 
 @dataclass
@@ -42,10 +46,29 @@ class ConversationState:
 _conversations: dict[str, ConversationState] = {}
 
 
-def get_conversation(chat_id: str) -> ConversationState:
+def get_conversation(chat_id: str, db: Database | None = None) -> ConversationState:
     if chat_id not in _conversations:
-        _conversations[chat_id] = ConversationState()
+        conv = ConversationState()
+        # Restore from DB on first access
+        if db is not None:
+            stored = db.load_conversation(chat_id)
+            if stored:
+                try:
+                    conv.history = _messages_adapter.validate_json(stored)
+                    logger.info("Restored %d messages for chat %s", len(conv.history), chat_id)
+                except Exception as e:
+                    logger.warning("Failed to restore conversation: %s", e)
+        _conversations[chat_id] = conv
     return _conversations[chat_id]
+
+
+def save_conversation(chat_id: str, history: list[ModelMessage], db: Database) -> None:
+    """Persist conversation state to DB."""
+    try:
+        json_bytes = _messages_adapter.dump_json(history[-MAX_HISTORY:])
+        db.save_conversation(chat_id, json_bytes.decode())
+    except Exception as e:
+        logger.warning("Failed to save conversation: %s", e)
 
 
 def _get_model() -> str:

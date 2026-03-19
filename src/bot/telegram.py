@@ -14,7 +14,7 @@ from telegram.ext import (
 
 from ..ai.coach import AICoach
 from ..garmin.sync import GarminSync
-from .agent import coach_agent, CoachDeps, get_conversation, MAX_HISTORY
+from .agent import coach_agent, CoachDeps, get_conversation, save_conversation, MAX_HISTORY
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +89,7 @@ class CoachBot:
         await update.message.chat.send_action("typing")
         user_text = update.message.text
         chat_id = str(update.effective_chat.id)
-        conv = get_conversation(chat_id)
+        conv = get_conversation(chat_id, db=self.sync.db)
 
         logger.info("Message: %s", user_text[:80])
 
@@ -101,8 +101,9 @@ class CoachBot:
                 message_history=conv.history,
             )
 
-            # Update conversation history
+            # Update and persist conversation history
             conv.history = result.all_messages()[-MAX_HISTORY:]
+            save_conversation(chat_id, conv.history, self.sync.db)
 
             response = result.output
 

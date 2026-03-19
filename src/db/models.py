@@ -93,6 +93,12 @@ CREATE TABLE IF NOT EXISTS notifications (
     type TEXT NOT NULL,
     content TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS conversation_state (
+    chat_id TEXT PRIMARY KEY,
+    messages_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -403,3 +409,19 @@ class Database:
                 (since_date,),
             ).fetchall()
             return [dict(r) for r in rows]
+
+    def save_conversation(self, chat_id: str, messages_json: str) -> None:
+        with self._connection() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO conversation_state (chat_id, messages_json, updated_at) "
+                "VALUES (?, ?, ?)",
+                (chat_id, messages_json, datetime.now().isoformat()),
+            )
+
+    def load_conversation(self, chat_id: str) -> str | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT messages_json FROM conversation_state WHERE chat_id = ?",
+                (chat_id,),
+            ).fetchone()
+            return row["messages_json"] if row else None
