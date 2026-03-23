@@ -27,13 +27,37 @@ class GarminSync:
 
         metrics = self.client.get_daily_metrics(target_date)
 
-        # Merge training readiness (separate API call)
-        readiness = self.client.get_training_readiness(target_date)
+        # Merge training readiness (full breakdown)
+        readiness = self.client.get_training_readiness_full(target_date)
         if readiness is not None:
             metrics["training_readiness_score"] = readiness["score"]
             metrics["training_readiness_level"] = readiness["level"]
             metrics["recovery_time_hours"] = readiness["recovery_time_hours"]
             metrics["acute_load"] = readiness["acute_load"]
+            metrics["readiness_feedback"] = readiness["feedback"]
+            metrics["readiness_sleep_factor"] = readiness["sleep_factor"]
+            metrics["readiness_hrv_factor"] = readiness["hrv_factor"]
+            metrics["readiness_recovery_factor"] = readiness["recovery_factor"]
+            metrics["readiness_acwr_factor"] = readiness["acwr_factor"]
+            metrics["readiness_stress_factor"] = readiness["stress_factor"]
+        else:
+            # Fallback to simple readiness
+            readiness_simple = self.client.get_training_readiness(target_date)
+            if readiness_simple is not None:
+                metrics["training_readiness_score"] = readiness_simple["score"]
+                metrics["training_readiness_level"] = readiness_simple["level"]
+                metrics["recovery_time_hours"] = readiness_simple["recovery_time_hours"]
+                metrics["acute_load"] = readiness_simple["acute_load"]
+
+        # Merge training status (ACWR, load balance, VO2 max)
+        status = self.client.get_training_status(target_date)
+        if status is not None:
+            metrics["training_status"] = status.get("training_status_feedback")
+            metrics["acwr_ratio"] = status.get("acwr_ratio")
+            metrics["chronic_load"] = status.get("chronic_load")
+            metrics["load_balance"] = status.get("load_balance_feedback")
+            metrics["vo2max_running"] = status.get("vo2max_running")
+            metrics["vo2max_cycling"] = status.get("vo2max_cycling")
 
         has_data = any(
             metrics.get(k) is not None

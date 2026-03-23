@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Generator
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -133,6 +133,8 @@ class Database:
 
             if current_version < 2:
                 self._migrate_v2(conn)
+            if current_version < 3:
+                self._migrate_v3(conn)
 
             if existing is None:
                 conn.execute(
@@ -163,6 +165,29 @@ class Database:
             except sqlite3.OperationalError:
                 pass  # Column already exists
 
+    @staticmethod
+    def _migrate_v3(conn: sqlite3.Connection) -> None:
+        """Add training status, readiness factors, VO2 max to daily_metrics."""
+        new_columns = [
+            ("daily_metrics", "readiness_feedback", "TEXT"),
+            ("daily_metrics", "readiness_sleep_factor", "TEXT"),
+            ("daily_metrics", "readiness_hrv_factor", "TEXT"),
+            ("daily_metrics", "readiness_recovery_factor", "TEXT"),
+            ("daily_metrics", "readiness_acwr_factor", "TEXT"),
+            ("daily_metrics", "readiness_stress_factor", "TEXT"),
+            ("daily_metrics", "training_status", "TEXT"),
+            ("daily_metrics", "acwr_ratio", "REAL"),
+            ("daily_metrics", "chronic_load", "REAL"),
+            ("daily_metrics", "load_balance", "TEXT"),
+            ("daily_metrics", "vo2max_running", "REAL"),
+            ("daily_metrics", "vo2max_cycling", "REAL"),
+        ]
+        for table, column, col_type in new_columns:
+            try:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+            except sqlite3.OperationalError:
+                pass
+
     # -- Daily Metrics --
 
     def upsert_daily_metrics(self, metrics: dict[str, Any]) -> None:
@@ -170,15 +195,23 @@ class Database:
             conn.execute(
                 """INSERT INTO daily_metrics
                    (date, hrv_weekly_avg, hrv_last_night, sleep_duration_min,
-                    sleep_score, body_battery_am, stress_avg, resting_hr, spo2_avg,
+                    sleep_score, sleep_start, sleep_end,
+                    body_battery_am, stress_avg, resting_hr, spo2_avg,
                     training_readiness_score, training_readiness_level,
-                    recovery_time_hours, acute_load, raw_json)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    recovery_time_hours, acute_load,
+                    readiness_feedback, readiness_sleep_factor, readiness_hrv_factor,
+                    readiness_recovery_factor, readiness_acwr_factor, readiness_stress_factor,
+                    training_status, acwr_ratio, chronic_load, load_balance,
+                    vo2max_running, vo2max_cycling,
+                    raw_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(date) DO UPDATE SET
                     hrv_weekly_avg=COALESCE(excluded.hrv_weekly_avg, hrv_weekly_avg),
                     hrv_last_night=COALESCE(excluded.hrv_last_night, hrv_last_night),
                     sleep_duration_min=COALESCE(excluded.sleep_duration_min, sleep_duration_min),
                     sleep_score=COALESCE(excluded.sleep_score, sleep_score),
+                    sleep_start=COALESCE(excluded.sleep_start, sleep_start),
+                    sleep_end=COALESCE(excluded.sleep_end, sleep_end),
                     body_battery_am=COALESCE(excluded.body_battery_am, body_battery_am),
                     stress_avg=COALESCE(excluded.stress_avg, stress_avg),
                     resting_hr=COALESCE(excluded.resting_hr, resting_hr),
@@ -187,6 +220,18 @@ class Database:
                     training_readiness_level=COALESCE(excluded.training_readiness_level, training_readiness_level),
                     recovery_time_hours=COALESCE(excluded.recovery_time_hours, recovery_time_hours),
                     acute_load=COALESCE(excluded.acute_load, acute_load),
+                    readiness_feedback=COALESCE(excluded.readiness_feedback, readiness_feedback),
+                    readiness_sleep_factor=COALESCE(excluded.readiness_sleep_factor, readiness_sleep_factor),
+                    readiness_hrv_factor=COALESCE(excluded.readiness_hrv_factor, readiness_hrv_factor),
+                    readiness_recovery_factor=COALESCE(excluded.readiness_recovery_factor, readiness_recovery_factor),
+                    readiness_acwr_factor=COALESCE(excluded.readiness_acwr_factor, readiness_acwr_factor),
+                    readiness_stress_factor=COALESCE(excluded.readiness_stress_factor, readiness_stress_factor),
+                    training_status=COALESCE(excluded.training_status, training_status),
+                    acwr_ratio=COALESCE(excluded.acwr_ratio, acwr_ratio),
+                    chronic_load=COALESCE(excluded.chronic_load, chronic_load),
+                    load_balance=COALESCE(excluded.load_balance, load_balance),
+                    vo2max_running=COALESCE(excluded.vo2max_running, vo2max_running),
+                    vo2max_cycling=COALESCE(excluded.vo2max_cycling, vo2max_cycling),
                     raw_json=excluded.raw_json""",
                 (
                     metrics["date"],
@@ -194,6 +239,8 @@ class Database:
                     metrics.get("hrv_last_night"),
                     metrics.get("sleep_duration_min"),
                     metrics.get("sleep_score"),
+                    metrics.get("sleep_start"),
+                    metrics.get("sleep_end"),
                     metrics.get("body_battery_am"),
                     metrics.get("stress_avg"),
                     metrics.get("resting_hr"),
@@ -202,6 +249,18 @@ class Database:
                     metrics.get("training_readiness_level"),
                     metrics.get("recovery_time_hours"),
                     metrics.get("acute_load"),
+                    metrics.get("readiness_feedback"),
+                    metrics.get("readiness_sleep_factor"),
+                    metrics.get("readiness_hrv_factor"),
+                    metrics.get("readiness_recovery_factor"),
+                    metrics.get("readiness_acwr_factor"),
+                    metrics.get("readiness_stress_factor"),
+                    metrics.get("training_status"),
+                    metrics.get("acwr_ratio"),
+                    metrics.get("chronic_load"),
+                    metrics.get("load_balance"),
+                    metrics.get("vo2max_running"),
+                    metrics.get("vo2max_cycling"),
                     json.dumps(metrics.get("raw"), ensure_ascii=False)
                     if metrics.get("raw")
                     else None,

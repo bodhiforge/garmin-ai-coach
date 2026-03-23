@@ -58,12 +58,16 @@ class GarminClient:
         stress = self._get_stress(date_str)
         body_battery = self._get_body_battery(target_date)
 
+        sleep_start, sleep_end = _parse_sleep_times(sleep)
+
         return {
             "date": date_str,
             "hrv_weekly_avg": _parse_hrv(hrv, "weeklyAvg"),
             "hrv_last_night": _parse_hrv(hrv, "lastNightAvg"),
             "sleep_duration_min": _parse_sleep_duration(sleep),
             "sleep_score": _parse_sleep_score(sleep),
+            "sleep_start": sleep_start,
+            "sleep_end": sleep_end,
             "body_battery_am": _parse_body_battery_morning(body_battery),
             "stress_avg": stress.get("avgStressLevel") if stress else None,
             "resting_hr": stats.get("restingHeartRate"),
@@ -113,7 +117,6 @@ class GarminClient:
             data = self.client.get_training_readiness(target_date.isoformat())
             if not data:
                 return None
-            # API returns a list of readings; take the most recent one
             latest = data[0]
             return {
                 "score": latest.get("score"),
@@ -127,6 +130,82 @@ class GarminClient:
             }
         except Exception as e:
             logger.warning("Failed to get training readiness: %s", e)
+            return None
+
+    def get_training_readiness_full(self, target_date: date | None = None) -> dict[str, Any] | None:
+        """Get detailed morning training readiness with all factor breakdowns."""
+        target_date = target_date or date.today()
+        try:
+            data = self.client.get_morning_training_readiness(target_date.isoformat())
+            if not data:
+                return None
+            return {
+                "score": data.get("score"),
+                "level": data.get("level"),
+                "feedback": data.get("feedbackShort"),
+                "recovery_time_hours": data.get("recoveryTime"),
+                "acute_load": data.get("acuteLoad"),
+                "hrv_weekly_avg": data.get("hrvWeeklyAverage"),
+                "sleep_score": data.get("sleepScore"),
+                "sleep_factor": data.get("sleepScoreFactorFeedback"),
+                "sleep_factor_pct": data.get("sleepScoreFactorPercent"),
+                "recovery_factor": data.get("recoveryTimeFactorFeedback"),
+                "recovery_factor_pct": data.get("recoveryTimeFactorPercent"),
+                "hrv_factor": data.get("hrvFactorFeedback"),
+                "hrv_factor_pct": data.get("hrvFactorPercent"),
+                "acwr_factor": data.get("acwrFactorFeedback"),
+                "acwr_factor_pct": data.get("acwrFactorPercent"),
+                "stress_factor": data.get("stressHistoryFactorFeedback"),
+                "stress_factor_pct": data.get("stressHistoryFactorPercent"),
+                "sleep_history_factor": data.get("sleepHistoryFactorFeedback"),
+                "sleep_history_factor_pct": data.get("sleepHistoryFactorPercent"),
+            }
+        except Exception as e:
+            logger.warning("Failed to get morning training readiness: %s", e)
+            return None
+
+    def get_training_status(self, target_date: date | None = None) -> dict[str, Any] | None:
+        """Get training status with load balance and ACWR."""
+        target_date = target_date or date.today()
+        try:
+            data = self.client.get_training_status(target_date.isoformat())
+            if not data:
+                return None
+
+            result = {}
+
+            # Training status
+            status_data = data.get("mostRecentTrainingStatus", {})
+            latest_status = status_data.get("latestTrainingStatusData", {})
+            for device_data in latest_status.values():
+                result["training_status"] = device_data.get("trainingStatus")
+                result["training_status_feedback"] = device_data.get("trainingStatusFeedbackPhrase")
+                acwl = device_data.get("acuteTrainingLoadDTO", {})
+                result["acwr_percent"] = acwl.get("acwrPercent")
+                result["acwr_status"] = acwl.get("acwrStatus")
+                result["acute_load"] = acwl.get("dailyTrainingLoadAcute")
+                result["chronic_load"] = acwl.get("dailyTrainingLoadChronic")
+                result["acwr_ratio"] = acwl.get("dailyAcuteChronicWorkloadRatio")
+                break
+
+            # Load balance
+            balance_data = data.get("mostRecentTrainingLoadBalance", {})
+            balance_map = balance_data.get("metricsTrainingLoadBalanceDTOMap", {})
+            for device_data in balance_map.values():
+                result["load_aerobic_low"] = device_data.get("monthlyLoadAerobicLow")
+                result["load_aerobic_high"] = device_data.get("monthlyLoadAerobicHigh")
+                result["load_anaerobic"] = device_data.get("monthlyLoadAnaerobic")
+                result["load_balance_feedback"] = device_data.get("trainingBalanceFeedbackPhrase")
+                break
+
+            # VO2 Max
+            vo2 = data.get("mostRecentVO2Max", {})
+            result["vo2max_running"] = vo2.get("generic")
+            result["vo2max_cycling"] = vo2.get("cycling")
+
+            return result
+        except Exception as e:
+            logger.warning("Failed to get training status: %s", e)
             return None
 
     def get_recent_activities(self, limit: int = 10) -> list[dict[str, Any]]:
@@ -208,6 +287,21 @@ def _parse_sleep_score(sleep: dict | None) -> int | None:
 
 
 
+
+
+def _parse_sleep_times(sleep: dict | None) -> tuple[str | None, str | None]:
+    """Extract sleep start/end as local time strings (HH:MM)."""
+    if sleep is None:
+        return None, None
+    daily = sleep.get("dailySleepDTO", {})
+    start_ms = daily.get("sleepStartTimestampLocal")
+    end_ms = daily.get("sleepEndTimestampLocal")
+    if start_ms is None or end_ms is None:
+        return None, None
+    from datetime import datetime
+    start = datetime.utcfromtimestamp(start_ms / 1000).strftime("%H:%M")
+    end = datetime.utcfromtimestamp(end_ms / 1000).strftime("%H:%M")
+    return start, end
 
 
 def _parse_body_battery_morning(battery: list[dict] | None) -> int | None:
