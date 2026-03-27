@@ -92,24 +92,64 @@ def cmd_sync(args: argparse.Namespace) -> None:
 
 
 def cmd_morning(args: argparse.Namespace) -> None:
-    """Generate and send AI-powered morning training briefing."""
+    """Sync data + write training digest to file. No LLM call.
+    The digest is consumed by Riko's OpenClaw cron which uses Opus."""
     from datetime import date, timedelta
+    from pathlib import Path
+    from .ai.insights import daily_summary
+
     config, _, _, sync, coach, bot = build_components(args.config)
 
     metrics = sync.sync_daily_metrics()
     sync.sync_activities()
 
-    # If today has no sleep data, use yesterday's (user may still be asleep or Garmin hasn't synced)
+    # If today has no sleep data, use yesterday's
     if metrics.get("sleep_duration_min") is None:
         yesterday = date.today() - timedelta(days=1)
         metrics = sync.client.get_daily_metrics(yesterday)
 
-    briefing = coach.morning_briefing(metrics)
-    print(briefing)
+    # Computed insights (pure Python, no LLM)
+    computed = daily_summary(coach.db)
 
-    if not args.dry_run:
-        asyncio.run(bot.send_message(briefing))
-        print("\nSent to Telegram.")
+    # Format raw metrics
+    from .ai.coach import _format_metrics
+    raw_metrics = _format_metrics(metrics)
+
+    # Read fitness plan
+    plan_path = Path.home() / "ai" / "data" / "fitness-plan.md"
+    fitness_plan = plan_path.read_text().strip() if plan_path.exists() else ""
+
+    # Read user memory context
+    memory_context = coach.get_memory()
+
+    # Write digest
+    digest_path = Path.home() / "ai" / "data" / "signals" / "training-digest.txt"
+    digest_path.parent.mkdir(parents=True, exist_ok=True)
+
+    digest = f"""# Training Digest — {date.today()} ({date.today().strftime('%A')})
+# Generated: {date.today().isoformat()} by Neve (pure data, no LLM)
+# Consumed by: Riko OpenClaw morning cron → Opus → Telegram
+
+## Raw Metrics
+{raw_metrics}
+
+## Computed Analysis
+{computed}
+
+## Fitness Plan
+{fitness_plan}
+
+## User Memory
+{memory_context if memory_context else "No memory files."}
+"""
+    digest_path.write_text(digest)
+    print(f"Digest written to {digest_path} ({len(digest)} chars)")
+
+    if args.dry_run:
+        print("\n--- DIGEST PREVIEW ---")
+        print(digest[:2000])
+        if len(digest) > 2000:
+            print(f"\n... ({len(digest) - 2000} more chars)")
 
 
 def cmd_analyze(args: argparse.Namespace) -> None:
