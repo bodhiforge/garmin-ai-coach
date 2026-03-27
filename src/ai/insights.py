@@ -665,14 +665,21 @@ def concerns_summary(db) -> str:
 
 
 def daily_summary(db: Database) -> str:
-    parts = [recovery_insights(db), training_accountability(db)]
+    parts = [
+        readiness_attribution(db),
+        recovery_insights(db),
+        sleep_quality_insights(db),
+        bb_dynamics_insights(db),
+        load_with_corrections(db),
+        training_accountability(db),
+        concerns_summary(db),
+    ]
 
     activities = db.get_recent_activities(days=7)
     if activities:
         types = [a["type"] for a in activities]
         parts.append(f"Last 7 days: {len(activities)} activities ({', '.join(set(types))})")
 
-    # Pre-ski briefing if consecutive skiing detected
     ski_briefing = pre_ski_briefing(db)
     if ski_briefing:
         parts.append(ski_briefing)
@@ -685,4 +692,4 @@ def daily_summary(db: Database) -> str:
     if gym:
         parts.append(gym_insights(db))
 
-    return "\n\n".join(parts)
+    return "\n\n".join(p for p in parts if p)

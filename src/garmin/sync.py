@@ -60,6 +60,17 @@ class GarminSync:
             metrics["vo2max_running"] = status.get("vo2max_running")
             metrics["vo2max_cycling"] = status.get("vo2max_cycling")
 
+        # Merge menstrual cycle data
+        menstrual = self.client.get_menstrual_data(target_date)
+        if menstrual is not None:
+            metrics["menstrual_phase"] = menstrual.get("phase")
+            metrics["menstrual_day_of_cycle"] = menstrual.get("day_of_cycle")
+
+        # Merge endurance score
+        endurance = self.client.get_endurance_score(target_date)
+        if endurance is not None:
+            metrics["endurance_score"] = endurance
+
         has_data = any(
             metrics.get(k) is not None
             for k in ("hrv_last_night", "sleep_duration_min", "resting_hr")
@@ -148,6 +159,28 @@ class GarminSync:
 
             if fit_path is not None:
                 self._parse_and_store_fit(activity_id, activity["type"], fit_path)
+            # Sync weather for outdoor activities
+            if activity["type"] in ("skiing", "hiking", "running", "cycling"):
+                weather = self.client.get_activity_weather(activity_id)
+                if weather is not None:
+                    activity.update({
+                        f"weather_{k}": v for k, v in weather.items() if v is not None
+                    })
+                    self.db.upsert_activity(activity)
+
+            # Sync HR zones
+            hr_zones = self.client.get_activity_hr_zones(activity_id)
+            if hr_zones is not None:
+                zone_map = {}
+                for z in hr_zones:
+                    zone_num = z.get("zone")
+                    secs = z.get("seconds")
+                    if zone_num is not None and secs is not None and 1 <= zone_num <= 5:
+                        zone_map[f"hr_zone{zone_num}_sec"] = secs
+                if zone_map:
+                    activity.update(zone_map)
+                    self.db.upsert_activity(activity)
+
             new_activities.append(activity)
 
         logger.info("Synced %d new activities", len(new_activities))

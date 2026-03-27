@@ -276,6 +276,39 @@ def _run_reflect(sync: GarminSync, coach: AICoach, bot, *, dry_run: bool) -> Non
         print("Nothing to report.")
 
 
+
+def cmd_concern(args: argparse.Namespace) -> None:
+    """Manage training concerns."""
+    config, db_unused, _, _, _, _ = build_components(args.config)
+    from .db.models import Database
+    db = Database(config.data_dir / "garmin.db")
+
+    if args.action == "add":
+        concern_id = db.upsert_concern(
+            concern=args.text,
+            impact=args.impact,
+            sport_affected=args.sport,
+            source=args.source or "user",
+        )
+        print(f"Added concern #{concern_id}: {args.text}")
+
+    elif args.action == "list":
+        concerns = db.get_active_concerns()
+        if not concerns:
+            print("No active concerns.")
+        else:
+            for c in concerns:
+                print(f"  #{c['id']} [{c['created_date']}] {c['concern']}")
+                if c.get("impact"):
+                    print(f"      Impact: {c['impact']}")
+                if c.get("sport_affected"):
+                    print(f"      Sport: {c['sport_affected']}")
+
+    elif args.action == "resolve":
+        db.resolve_concern(int(args.concern_id))
+        print(f"Resolved concern #{args.concern_id}")
+
+
 def cmd_push_workout(args: argparse.Namespace) -> None:
     """Push a workout plan JSON to Garmin Connect."""
     import json as _json
@@ -333,6 +366,15 @@ def main() -> None:
     # whoami — computed user model
     subparsers.add_parser("whoami", help="What the system knows about you")
 
+    # concern — manage training concerns
+    concern_parser = subparsers.add_parser("concern", help="Manage training concerns")
+    concern_parser.add_argument("action", choices=["add", "list", "resolve"], help="Action")
+    concern_parser.add_argument("text", nargs="?", default="", help="Concern text (for add)")
+    concern_parser.add_argument("--impact", help="Impact description")
+    concern_parser.add_argument("--sport", help="Affected sport")
+    concern_parser.add_argument("--source", default="user", help="Source (user/riko/neve)")
+    concern_parser.add_argument("--concern-id", help="Concern ID (for resolve)")
+
     # push-workout — upload workout plan to Garmin
     push_parser = subparsers.add_parser("push-workout", help="Push workout JSON to Garmin")
     push_parser.add_argument("plan", help="Workout plan as JSON string")
@@ -356,6 +398,7 @@ def main() -> None:
         "reflect": cmd_reflect,
         "impact": cmd_impact,
         "whoami": cmd_whoami,
+        "concern": cmd_concern,
         "push-workout": cmd_push_workout,
     }
 

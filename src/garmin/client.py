@@ -221,6 +221,86 @@ class GarminClient:
 
         return [_normalize_activity(a) for a in raw_activities]
 
+
+    def get_menstrual_data(self, target_date: date | None = None) -> dict[str, Any] | None:
+        """Get menstrual cycle phase and day for a given date."""
+        target_date = target_date or date.today()
+        try:
+            data = self.client.get_menstrual_data_for_date(target_date.isoformat())
+            if not data:
+                return None
+            cycle_info = data.get("cycleInfo", data)
+            if isinstance(cycle_info, list) and cycle_info:
+                cycle_info = cycle_info[0]
+            if not isinstance(cycle_info, dict):
+                return None
+            return {
+                "phase": cycle_info.get("currentPhase") or cycle_info.get("phase"),
+                "day_of_cycle": cycle_info.get("dayOfCycle"),
+                "cycle_length": cycle_info.get("cycleLength"),
+            }
+        except Exception as e:
+            logger.debug("Menstrual data not available: %s", e)
+            return None
+
+    def get_endurance_score(self, target_date: date | None = None) -> float | None:
+        """Get endurance score for a given date."""
+        target_date = target_date or date.today()
+        try:
+            data = self.client.get_endurance_score(
+                target_date.isoformat(), target_date.isoformat()
+            )
+            if not data:
+                return None
+            # Navigate to the score — structure varies by API version
+            if isinstance(data, dict):
+                scores = data.get("enduranceScoreDTOList") or data.get("overallScores") or []
+                if isinstance(scores, list) and scores:
+                    return scores[-1].get("enduranceScore") or scores[-1].get("overallScore")
+                return data.get("enduranceScore")
+            return None
+        except Exception as e:
+            logger.debug("Endurance score not available: %s", e)
+            return None
+
+    def get_activity_weather(self, activity_id: str) -> dict[str, Any] | None:
+        """Get weather conditions during an activity."""
+        try:
+            data = self.client.get_activity_weather(str(activity_id))
+            if not data:
+                return None
+            return {
+                "temp_c": data.get("temp"),
+                "condition": data.get("weatherTypeDTO", {}).get("desc")
+                             if isinstance(data.get("weatherTypeDTO"), dict)
+                             else data.get("issueWeatherDTO", {}).get("desc"),
+                "wind_kmh": data.get("windSpeed"),
+                "humidity": data.get("relativeHumidity"),
+            }
+        except Exception as e:
+            logger.debug("Activity weather not available for %s: %s", activity_id, e)
+            return None
+
+    def get_activity_hr_zones(self, activity_id: str) -> list[dict[str, Any]] | None:
+        """Get heart rate zone time distribution for an activity."""
+        try:
+            data = self.client.get_activity_hr_in_timezones(str(activity_id))
+            if not data:
+                return None
+            zones = []
+            for zone in data:
+                if isinstance(zone, dict):
+                    zones.append({
+                        "zone": zone.get("zoneNumber"),
+                        "seconds": zone.get("secsInZone"),
+                        "low_bpm": zone.get("zoneLowBoundary"),
+                        "high_bpm": zone.get("zoneHighBoundary"),
+                    })
+            return zones if zones else None
+        except Exception as e:
+            logger.debug("HR zones not available for %s: %s", activity_id, e)
+            return None
+
     def download_fit_file(self, activity_id: str, output_dir: Path) -> Path | None:
         try:
             zip_data = self.client.download_activity(

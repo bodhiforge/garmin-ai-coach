@@ -38,8 +38,10 @@ Sport emoji + what to do today.
 **Block 4: Week progress (1-2 lines)**
 📅 This week: X/Y sessions (types). What's missing, what's needed.
 
-**Block 5: Concern check (0-1 lines, only if active concerns exist)**
-⚠️ Reference active concerns and how today's recommendation accounts for them.
+**Block 5: Concern check (MANDATORY if "Active Concerns" section exists in computed analysis)**
+⚠️ Name each active concern explicitly and state how Block 3's recommendation accounts for it.
+If a concern says "avoid X" and today's sport involves X, you MUST modify the recommendation.
+Example: "⚠️ 膝盖: avoiding jumps and sudden stops — basketball switched to shooting drills only"
 
 ## Emoji Guide
 Weather: ☀️ Clear | ⛅ Partly cloudy | ☁️ Overcast | 🌧️ Rain | ❄️ Snow
@@ -49,7 +51,7 @@ Sport: 🏊 swim | 🏋️ gym | 🏀 basketball | ⛷️ ski | 🚴 cycle | �
 - Total message: ONE phone screen. No more.
 - Do NOT recalculate. The computed analysis is authoritative.
 - Substitute actual values from the data. Never output placeholder brackets.
-- If a concern says "avoid X", your recommendation MUST respect it.
+- CRITICAL: If "Active Concerns" appears in computed analysis, Block 3 MUST adapt and Block 5 MUST appear. Never ignore concerns.
 - No cheerleading, no filler. Every word earns its place.
 - Connect dots: "BB recharge was only +30 despite 7h sleep → poor sleep quality, not sleep quantity"
 - Basketball training load from Garmin is unreliable (watch not worn). Use corrected load in analysis.
