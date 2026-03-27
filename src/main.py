@@ -73,8 +73,8 @@ def cmd_bot(args: argparse.Namespace) -> None:
 
 
 def cmd_sync(args: argparse.Namespace) -> None:
-    """One-shot sync of Garmin data."""
-    _, _, _, sync, _, _ = build_components(args.config)
+    """One-shot sync of Garmin data. Auto-sends morning brief on wake-up detection."""
+    config, _, _, sync, coach, bot = build_components(args.config)
 
     metrics = sync.sync_daily_metrics()
     print(f"Daily metrics synced: HRV={metrics.get('hrv_last_night')}ms, "
@@ -83,14 +83,40 @@ def cmd_sync(args: argparse.Namespace) -> None:
     new_activities = sync.sync_activities()
     print(f"Activities synced: {len(new_activities)} new")
 
+    # Auto-push AI morning brief when wake-up detected
+    if getattr(sync, '_last_wake_detected', False):
+        import asyncio
+        briefing = coach.morning_briefing(metrics)
+        asyncio.run(bot.send_message(briefing))
+        print("Wake-up detected — AI morning brief sent to Telegram.")
+
 
 def cmd_morning(args: argparse.Namespace) -> None:
-    """Generate and send morning briefing."""
+    """Generate and send morning data snapshot (no LLM call)."""
+    from datetime import date, timedelta
     config, _, _, sync, coach, bot = build_components(args.config)
 
     metrics = sync.sync_daily_metrics()
     sync.sync_activities()
-    briefing = coach.morning_briefing(metrics)
+
+    # If today has no sleep data, use yesterday's (user may still be asleep or Garmin hasn't synced)
+    if metrics.get("sleep_duration_min") is None:
+        yesterday = date.today() - timedelta(days=1)
+        metrics = sync.client.get_daily_metrics(yesterday)
+
+    sleep_min = metrics.get("sleep_duration_min") or 0
+    sleep_h = sleep_min // 60
+    sleep_m = sleep_min % 60
+    sleep_start = metrics.get("sleep_start", "?")
+    sleep_end = metrics.get("sleep_end", "?")
+    briefing = (
+        f"\U0001f3d4 Body Status\n"
+        f"HRV: {metrics.get('hrv_last_night', '?')}ms\n"
+        f"Sleep: {sleep_h}h{sleep_m:02d}m ({sleep_start}\u2013{sleep_end})\n"
+        f"BB: {metrics.get('body_battery_am', '?')}/100\n"
+        f"RHR: {metrics.get('resting_hr', '?')}bpm\n"
+        f"Readiness: {metrics.get('training_readiness_score', '?')}/100"
+    )
 
     print(briefing)
 
@@ -238,13 +264,8 @@ def _run_reflect(sync: GarminSync, coach: AICoach, bot, *, dry_run: bool) -> Non
         # Check if there's a new activity — send full analysis
         message = _build_activity_analysis(events, sync.db, coach)
         if message is None:
-            # No activity event — fall back to generic LLM notification for alerts
-            event_summary = "; ".join(events)
-            message = coach._call_ai(
-                "You are a concise fitness coach. Write a short Telegram notification (2-3 sentences) "
-                "about these events. Be direct, reference specific numbers. Do not add generic advice.",
-                event_summary,
-            )
+            # No activity event — template notification (no LLM call)
+            message = "\U0001f4ca " + " | ".join(events)
         print(f"Message: {message}")
         if not dry_run:
             for event in events:
@@ -266,6 +287,32 @@ def _run_reflect(sync: GarminSync, coach: AICoach, bot, *, dry_run: bool) -> Non
             print("Sent to Telegram.")
     else:
         print("Nothing to report.")
+
+
+def cmd_push_workout(args: argparse.Namespace) -> None:
+    """Push a workout plan JSON to Garmin Connect."""
+    import json as _json
+    config, _, garmin_client, _, _, _ = build_components(args.config)
+
+    plan = _json.loads(args.plan)
+
+    from .garmin.workout import upload_workout, format_plan_text
+    print(format_plan_text(plan))
+
+    workout_id = upload_workout(garmin_client, plan)
+    if workout_id is not None:
+        print(f"\nUploaded to Garmin (id: {workout_id})")
+
+        from .garmin.workout import load_workout_tracker, save_workout_tracker
+        tracker = load_workout_tracker(config.data_dir)
+        tracker[plan.get("name", "unnamed")] = {
+            "workout_id": workout_id,
+            "plan": plan,
+        }
+        save_workout_tracker(config.data_dir, tracker)
+    else:
+        print("\nFailed to upload workout.")
+        raise SystemExit(1)
 
 
 def main() -> None:
@@ -299,6 +346,10 @@ def main() -> None:
     # whoami — computed user model
     subparsers.add_parser("whoami", help="What the system knows about you")
 
+    # push-workout — upload workout plan to Garmin
+    push_parser = subparsers.add_parser("push-workout", help="Push workout JSON to Garmin")
+    push_parser.add_argument("plan", help="Workout plan as JSON string")
+
     # setup — interactive setup wizard
     subparsers.add_parser("setup", help="Interactive setup wizard for new users")
 
@@ -318,6 +369,7 @@ def main() -> None:
         "reflect": cmd_reflect,
         "impact": cmd_impact,
         "whoami": cmd_whoami,
+        "push-workout": cmd_push_workout,
     }
 
     commands[args.command](args)

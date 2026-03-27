@@ -175,9 +175,11 @@ class GarminClient:
             result = {}
 
             # Training status
-            status_data = data.get("mostRecentTrainingStatus", {})
-            latest_status = status_data.get("latestTrainingStatusData", {})
+            status_data = data.get("mostRecentTrainingStatus") or {}
+            latest_status = status_data.get("latestTrainingStatusData") or {}
             for device_data in latest_status.values():
+                if device_data is None:
+                    continue
                 result["training_status"] = device_data.get("trainingStatus")
                 result["training_status_feedback"] = device_data.get("trainingStatusFeedbackPhrase")
                 acwl = device_data.get("acuteTrainingLoadDTO", {})
@@ -189,9 +191,11 @@ class GarminClient:
                 break
 
             # Load balance
-            balance_data = data.get("mostRecentTrainingLoadBalance", {})
-            balance_map = balance_data.get("metricsTrainingLoadBalanceDTOMap", {})
+            balance_data = data.get("mostRecentTrainingLoadBalance") or {}
+            balance_map = balance_data.get("metricsTrainingLoadBalanceDTOMap") or {}
             for device_data in balance_map.values():
+                if device_data is None:
+                    continue
                 result["load_aerobic_low"] = device_data.get("monthlyLoadAerobicLow")
                 result["load_aerobic_high"] = device_data.get("monthlyLoadAerobicHigh")
                 result["load_anaerobic"] = device_data.get("monthlyLoadAnaerobic")
@@ -199,7 +203,7 @@ class GarminClient:
                 break
 
             # VO2 Max
-            vo2 = data.get("mostRecentVO2Max", {})
+            vo2 = data.get("mostRecentVO2Max") or {}
             result["vo2max_running"] = vo2.get("generic")
             result["vo2max_cycling"] = vo2.get("cycling")
 

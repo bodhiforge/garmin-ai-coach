@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .client import GarminClient
+from ..db.migrate_v4 import extract_daily_metrics_from_raw, extract_activity_from_raw
 from .fit_parser import parse_gym_session, parse_ski_session
 from ..db.models import Database
 
@@ -64,17 +65,13 @@ class GarminSync:
             for k in ("hrv_last_night", "sleep_duration_min", "resting_hr")
         )
 
-        # If today has no data, try yesterday (Garmin may not have processed yet)
-        if not has_data and target_date == date.today():
-            yesterday = target_date - timedelta(days=1)
-            logger.info("No data for today, trying yesterday (%s)", yesterday)
-            metrics = self.client.get_daily_metrics(yesterday)
-            has_data = any(
-                metrics.get(k) is not None
-                for k in ("hrv_last_night", "sleep_duration_min", "resting_hr")
-            )
-
         if has_data:
+            # Extract deep fields from raw data for new v4 columns
+            if metrics.get("raw"):
+                import json
+                raw_json_str = json.dumps(metrics["raw"], ensure_ascii=False)
+                extracted = extract_daily_metrics_from_raw(raw_json_str)
+                metrics.update(extracted)
             self.db.upsert_daily_metrics(metrics)
             logger.info(
                 "Synced metrics [%s]: HRV=%s, sleep=%smin, BB=%s, RHR=%s",
@@ -85,7 +82,37 @@ class GarminSync:
                 metrics.get("resting_hr"),
             )
         else:
-            logger.warning("No valid metrics for %s or yesterday, skipping", target_date)
+            logger.info("No data yet for %s", target_date)
+
+        # Always re-sync yesterday — Garmin backfills fields (sleep times,
+        # readiness) hours after the initial sync window
+        if target_date == date.today():
+            yesterday = target_date - timedelta(days=1)
+            logger.info("Re-syncing yesterday (%s) for backfill", yesterday)
+            y_metrics = self.client.get_daily_metrics(yesterday)
+            y_has = any(
+                y_metrics.get(k) is not None
+                for k in ("hrv_last_night", "sleep_duration_min", "resting_hr")
+            )
+            if y_has:
+                self.db.upsert_daily_metrics(y_metrics)
+                logger.info(
+                    "Backfilled [%s]: sleep_start=%s, sleep_end=%s",
+                    y_metrics.get("date"),
+                    y_metrics.get("sleep_start"),
+                    y_metrics.get("sleep_end"),
+                )
+
+        # Wake-up detection: if today's sleep_end just appeared, signal it
+        self._last_wake_detected = False
+        if has_data and metrics.get("sleep_end") is not None:
+            wake_flag = self.data_dir / ".wake_sent_today"
+            today_str = date.today().isoformat()
+            already_sent = wake_flag.exists() and wake_flag.read_text().strip() == today_str
+            if not already_sent:
+                wake_flag.write_text(today_str)
+                self._last_wake_detected = True
+                logger.info("Wake-up detected: sleep_end=%s. Flagged for morning push.", metrics.get("sleep_end"))
 
         return metrics
 
@@ -111,6 +138,12 @@ class GarminSync:
                 if fit_path is not None:
                     activity["fit_file_path"] = str(fit_path)
 
+            # Extract deep fields from raw data for new v4 columns
+            if activity.get("raw"):
+                import json
+                raw_json_str = json.dumps(activity["raw"], ensure_ascii=False)
+                extracted = extract_activity_from_raw(raw_json_str)
+                activity.update(extracted)
             self.db.upsert_activity(activity)
 
             if fit_path is not None:

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Generator
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -135,6 +135,8 @@ class Database:
                 self._migrate_v2(conn)
             if current_version < 3:
                 self._migrate_v3(conn)
+            if current_version < 4:
+                self._migrate_v4(conn)
 
             if existing is None:
                 conn.execute(
@@ -188,83 +190,66 @@ class Database:
             except sqlite3.OperationalError:
                 pass
 
+    @staticmethod
+    def _migrate_v4(conn: sqlite3.Connection) -> None:
+        """Deep Garmin extraction: sleep stages, BB dynamics, stress, HRV detail, movement, concerns."""
+        from .migrate_v4 import DAILY_METRICS_NEW_COLUMNS, ACTIVITIES_NEW_COLUMNS, NEW_TABLES_SQL
+        for table, cols in [("daily_metrics", DAILY_METRICS_NEW_COLUMNS), ("activities", ACTIVITIES_NEW_COLUMNS)]:
+            for col_name, col_type in cols:
+                try:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type}")
+                except sqlite3.OperationalError:
+                    pass
+        conn.executescript(NEW_TABLES_SQL)
+
     # -- Daily Metrics --
 
     def upsert_daily_metrics(self, metrics: dict[str, Any]) -> None:
+        # Build dynamic column list from metrics keys vs known columns
+        all_columns = [
+            "date", "hrv_weekly_avg", "hrv_last_night", "sleep_duration_min",
+            "sleep_score", "sleep_start", "sleep_end",
+            "body_battery_am", "stress_avg", "resting_hr", "spo2_avg",
+            "training_readiness_score", "training_readiness_level",
+            "recovery_time_hours", "acute_load",
+            "readiness_feedback", "readiness_sleep_factor", "readiness_hrv_factor",
+            "readiness_recovery_factor", "readiness_acwr_factor", "readiness_stress_factor",
+            "training_status", "acwr_ratio", "chronic_load", "load_balance",
+            "vo2max_running", "vo2max_cycling",
+            # v4 columns
+            "sleep_deep_min", "sleep_light_min", "sleep_rem_min", "sleep_awake_min",
+            "sleep_score_deep", "sleep_score_rem", "sleep_score_light",
+            "sleep_score_restlessness", "sleep_score_duration", "sleep_score_awake_count",
+            "bb_at_wake", "bb_highest", "bb_lowest", "bb_drained",
+            "bb_sleep_charge", "bb_most_recent", "bb_feedback",
+            "stress_rest_pct", "stress_low_pct", "stress_medium_pct", "stress_high_pct",
+            "respiration_avg", "respiration_high", "respiration_low",
+            "hrv_range_low", "hrv_range_high", "hrv_status", "hrv_reading_count",
+            "steps", "active_minutes", "sedentary_hours",
+            "intensity_minutes_vigorous", "intensity_minutes_moderate", "floors_ascended",
+            "menstrual_phase", "menstrual_day_of_cycle",
+            "endurance_score", "restless_moments",
+        ]
+        # Always include raw_json separately
+        present_cols = [c for c in all_columns if c in metrics or c == "date"]
+        col_names = ", ".join(present_cols) + ", raw_json"
+        placeholders = ", ".join(["?"] * len(present_cols)) + ", ?"
+        update_clauses = ", ".join(
+            f"{c}=COALESCE(excluded.{c}, {c})" for c in present_cols if c != "date"
+        ) + ", raw_json=excluded.raw_json"
+
+        values = [metrics.get(c) for c in present_cols]
+        values.append(
+            json.dumps(metrics.get("raw"), ensure_ascii=False)
+            if metrics.get("raw") else None
+        )
+
         with self._connection() as conn:
             conn.execute(
-                """INSERT INTO daily_metrics
-                   (date, hrv_weekly_avg, hrv_last_night, sleep_duration_min,
-                    sleep_score, sleep_start, sleep_end,
-                    body_battery_am, stress_avg, resting_hr, spo2_avg,
-                    training_readiness_score, training_readiness_level,
-                    recovery_time_hours, acute_load,
-                    readiness_feedback, readiness_sleep_factor, readiness_hrv_factor,
-                    readiness_recovery_factor, readiness_acwr_factor, readiness_stress_factor,
-                    training_status, acwr_ratio, chronic_load, load_balance,
-                    vo2max_running, vo2max_cycling,
-                    raw_json)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(date) DO UPDATE SET
-                    hrv_weekly_avg=COALESCE(excluded.hrv_weekly_avg, hrv_weekly_avg),
-                    hrv_last_night=COALESCE(excluded.hrv_last_night, hrv_last_night),
-                    sleep_duration_min=COALESCE(excluded.sleep_duration_min, sleep_duration_min),
-                    sleep_score=COALESCE(excluded.sleep_score, sleep_score),
-                    sleep_start=COALESCE(excluded.sleep_start, sleep_start),
-                    sleep_end=COALESCE(excluded.sleep_end, sleep_end),
-                    body_battery_am=COALESCE(excluded.body_battery_am, body_battery_am),
-                    stress_avg=COALESCE(excluded.stress_avg, stress_avg),
-                    resting_hr=COALESCE(excluded.resting_hr, resting_hr),
-                    spo2_avg=COALESCE(excluded.spo2_avg, spo2_avg),
-                    training_readiness_score=COALESCE(excluded.training_readiness_score, training_readiness_score),
-                    training_readiness_level=COALESCE(excluded.training_readiness_level, training_readiness_level),
-                    recovery_time_hours=COALESCE(excluded.recovery_time_hours, recovery_time_hours),
-                    acute_load=COALESCE(excluded.acute_load, acute_load),
-                    readiness_feedback=COALESCE(excluded.readiness_feedback, readiness_feedback),
-                    readiness_sleep_factor=COALESCE(excluded.readiness_sleep_factor, readiness_sleep_factor),
-                    readiness_hrv_factor=COALESCE(excluded.readiness_hrv_factor, readiness_hrv_factor),
-                    readiness_recovery_factor=COALESCE(excluded.readiness_recovery_factor, readiness_recovery_factor),
-                    readiness_acwr_factor=COALESCE(excluded.readiness_acwr_factor, readiness_acwr_factor),
-                    readiness_stress_factor=COALESCE(excluded.readiness_stress_factor, readiness_stress_factor),
-                    training_status=COALESCE(excluded.training_status, training_status),
-                    acwr_ratio=COALESCE(excluded.acwr_ratio, acwr_ratio),
-                    chronic_load=COALESCE(excluded.chronic_load, chronic_load),
-                    load_balance=COALESCE(excluded.load_balance, load_balance),
-                    vo2max_running=COALESCE(excluded.vo2max_running, vo2max_running),
-                    vo2max_cycling=COALESCE(excluded.vo2max_cycling, vo2max_cycling),
-                    raw_json=excluded.raw_json""",
-                (
-                    metrics["date"],
-                    metrics.get("hrv_weekly_avg"),
-                    metrics.get("hrv_last_night"),
-                    metrics.get("sleep_duration_min"),
-                    metrics.get("sleep_score"),
-                    metrics.get("sleep_start"),
-                    metrics.get("sleep_end"),
-                    metrics.get("body_battery_am"),
-                    metrics.get("stress_avg"),
-                    metrics.get("resting_hr"),
-                    metrics.get("spo2_avg"),
-                    metrics.get("training_readiness_score"),
-                    metrics.get("training_readiness_level"),
-                    metrics.get("recovery_time_hours"),
-                    metrics.get("acute_load"),
-                    metrics.get("readiness_feedback"),
-                    metrics.get("readiness_sleep_factor"),
-                    metrics.get("readiness_hrv_factor"),
-                    metrics.get("readiness_recovery_factor"),
-                    metrics.get("readiness_acwr_factor"),
-                    metrics.get("readiness_stress_factor"),
-                    metrics.get("training_status"),
-                    metrics.get("acwr_ratio"),
-                    metrics.get("chronic_load"),
-                    metrics.get("load_balance"),
-                    metrics.get("vo2max_running"),
-                    metrics.get("vo2max_cycling"),
-                    json.dumps(metrics.get("raw"), ensure_ascii=False)
-                    if metrics.get("raw")
-                    else None,
-                ),
+                f"""INSERT INTO daily_metrics ({col_names})
+                    VALUES ({placeholders})
+                    ON CONFLICT(date) DO UPDATE SET {update_clauses}""",
+                values,
             )
 
     def get_daily_metrics(self, target_date: str | date | None = None) -> dict[str, Any] | None:
@@ -292,36 +277,37 @@ class Database:
     # -- Activities --
 
     def upsert_activity(self, activity: dict[str, Any]) -> None:
+        all_columns = [
+            "id", "date", "type", "duration_min", "avg_hr", "max_hr", "calories",
+            "aerobic_te", "anaerobic_te", "training_load",
+            "summary_json", "fit_file_path",
+            # v4 columns
+            "activity_name", "weather_temp_c", "weather_condition",
+            "weather_wind_kmh", "weather_humidity",
+            "elevation_gain", "elevation_loss", "max_elevation",
+            "hr_zone1_sec", "hr_zone2_sec", "hr_zone3_sec", "hr_zone4_sec", "hr_zone5_sec",
+            "distance_m", "avg_speed", "max_speed",
+            "training_effect_label", "start_time",
+        ]
+        present_cols = [c for c in all_columns if c in activity or c in ("id", "date", "type")]
+        col_names = ", ".join(present_cols) + ", raw_json"
+        placeholders = ", ".join(["?"] * len(present_cols)) + ", ?"
+        update_clauses = ", ".join(
+            f"{c}=COALESCE(excluded.{c}, {c})" for c in present_cols if c != "id"
+        ) + ", raw_json=excluded.raw_json"
+
+        values = [activity.get(c) for c in present_cols]
+        values.append(
+            json.dumps(activity.get("raw"), ensure_ascii=False)
+            if activity.get("raw") else None
+        )
+
         with self._connection() as conn:
             conn.execute(
-                """INSERT INTO activities
-                   (id, date, type, duration_min, avg_hr, max_hr, calories,
-                    aerobic_te, anaerobic_te, training_load,
-                    summary_json, fit_file_path, raw_json)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(id) DO UPDATE SET
-                    summary_json=excluded.summary_json,
-                    fit_file_path=excluded.fit_file_path,
-                    aerobic_te=COALESCE(excluded.aerobic_te, aerobic_te),
-                    anaerobic_te=COALESCE(excluded.anaerobic_te, anaerobic_te),
-                    training_load=COALESCE(excluded.training_load, training_load)""",
-                (
-                    str(activity["id"]),
-                    activity["date"],
-                    activity["type"],
-                    activity.get("duration_min"),
-                    activity.get("avg_hr"),
-                    activity.get("max_hr"),
-                    activity.get("calories"),
-                    activity.get("aerobic_te"),
-                    activity.get("anaerobic_te"),
-                    activity.get("training_load"),
-                    activity.get("summary_json"),
-                    activity.get("fit_file_path"),
-                    json.dumps(activity.get("raw"), ensure_ascii=False)
-                    if activity.get("raw")
-                    else None,
-                ),
+                f"""INSERT INTO activities ({col_names})
+                    VALUES ({placeholders})
+                    ON CONFLICT(id) DO UPDATE SET {update_clauses}""",
+                values,
             )
 
     def activity_exists(self, activity_id: str) -> bool:
@@ -484,3 +470,134 @@ class Database:
                 (chat_id,),
             ).fetchone()
             return row["messages_json"] if row else None
+
+    # -- Concerns --
+
+    def upsert_concern(self, concern: str, impact: str | None = None,
+                       sport_affected: str | None = None, source: str = "user") -> int:
+        with self._connection() as conn:
+            cursor = conn.execute(
+                """INSERT INTO concerns (created_date, concern, impact, sport_affected, source)
+                   VALUES (date('now'), ?, ?, ?, ?)""",
+                (concern, impact, sport_affected, source),
+            )
+            return cursor.lastrowid
+
+    def get_active_concerns(self) -> list[dict[str, Any]]:
+        with self._connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM concerns WHERE status = 'active' ORDER BY created_date DESC"
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def resolve_concern(self, concern_id: int) -> None:
+        with self._connection() as conn:
+            conn.execute(
+                "UPDATE concerns SET status = 'resolved', resolved_date = date('now') WHERE id = ?",
+                (concern_id,),
+            )
+
+    # -- Basketball Corrections --
+
+    def get_basketball_correction(self, activity_id: str) -> dict[str, Any] | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM basketball_corrections WHERE activity_id = ?",
+                (activity_id,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def get_corrected_load(self, activity_id: str, garmin_load: float) -> float:
+        """Return corrected training load for basketball (or original for other sports)."""
+        correction = self.get_basketball_correction(activity_id)
+        if correction is not None:
+            return correction["estimated_load"]
+        return garmin_load
+
+    # -- Extended Queries --
+
+    def get_sleep_stages(self, days: int = 7) -> list[dict[str, Any]]:
+        with self._connection() as conn:
+            rows = conn.execute(
+                """SELECT date, sleep_duration_min, sleep_deep_min, sleep_light_min,
+                          sleep_rem_min, sleep_awake_min, sleep_score,
+                          sleep_score_deep, sleep_score_rem, sleep_score_restlessness,
+                          restless_moments, bb_sleep_charge
+                   FROM daily_metrics
+                   WHERE sleep_deep_min IS NOT NULL
+                   ORDER BY date DESC LIMIT ?""",
+                (days,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_bb_dynamics(self, days: int = 7) -> list[dict[str, Any]]:
+        with self._connection() as conn:
+            rows = conn.execute(
+                """SELECT date, body_battery_am, bb_at_wake, bb_highest, bb_lowest,
+                          bb_drained, bb_sleep_charge, bb_most_recent, bb_feedback
+                   FROM daily_metrics
+                   WHERE bb_at_wake IS NOT NULL
+                   ORDER BY date DESC LIMIT ?""",
+                (days,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_readiness_factors(self, days: int = 7) -> list[dict[str, Any]]:
+        with self._connection() as conn:
+            rows = conn.execute(
+                """SELECT date, training_readiness_score, training_readiness_level,
+                          readiness_feedback, readiness_sleep_factor, readiness_hrv_factor,
+                          readiness_recovery_factor, readiness_acwr_factor, readiness_stress_factor,
+                          recovery_time_hours
+                   FROM daily_metrics
+                   WHERE training_readiness_score IS NOT NULL
+                   ORDER BY date DESC LIMIT ?""",
+                (days,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_stress_breakdown(self, days: int = 7) -> list[dict[str, Any]]:
+        with self._connection() as conn:
+            rows = conn.execute(
+                """SELECT date, stress_avg, stress_rest_pct, stress_low_pct,
+                          stress_medium_pct, stress_high_pct
+                   FROM daily_metrics
+                   WHERE stress_rest_pct IS NOT NULL
+                   ORDER BY date DESC LIMIT ?""",
+                (days,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_movement_summary(self, days: int = 7) -> list[dict[str, Any]]:
+        with self._connection() as conn:
+            rows = conn.execute(
+                """SELECT date, steps, active_minutes, sedentary_hours,
+                          intensity_minutes_vigorous, intensity_minutes_moderate,
+                          floors_ascended
+                   FROM daily_metrics
+                   WHERE steps IS NOT NULL
+                   ORDER BY date DESC LIMIT ?""",
+                (days,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_corrected_weekly_load(self, days: int = 7) -> float:
+        """Get total training load for the past N days, with basketball corrections applied."""
+        with self._connection() as conn:
+            rows = conn.execute(
+                """SELECT a.id, a.type, a.training_load, a.date,
+                          bc.estimated_load as corrected_load
+                   FROM activities a
+                   LEFT JOIN basketball_corrections bc ON a.id = bc.activity_id
+                   WHERE a.date >= date('now', ? || ' days')
+                   ORDER BY a.date DESC""",
+                (f"-{days}",),
+            ).fetchall()
+            total = 0.0
+            for r in rows:
+                if r["type"] == "basketball" and r["corrected_load"] is not None:
+                    total += r["corrected_load"]
+                elif r["training_load"] is not None:
+                    total += r["training_load"]
+            return total
+

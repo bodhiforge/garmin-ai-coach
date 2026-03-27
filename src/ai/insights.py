@@ -408,8 +408,47 @@ def pre_ski_briefing(db: Database) -> str | None:
     return "\n".join(lines)
 
 
+def training_accountability(db: Database) -> str:
+    """Training frequency, recency, and push signals for the AI coach."""
+    lines = ["## Training Accountability (computed)"]
+    
+    # Days since last workout (any type)
+    all_recent = db.get_recent_activities(days=30)
+    if all_recent:
+        last_date = date.fromisoformat(all_recent[0]["date"])
+        days_since = (date.today() - last_date).days
+        lines.append(f"Last workout: {all_recent[0]['type']} on {all_recent[0]['date']} ({days_since} day(s) ago)")
+        if days_since >= 3:
+            lines.append(f"  \u26a0\ufe0f {days_since} days without training. Push today if readiness allows.")
+        elif days_since == 0:
+            lines.append("  Already trained today.")
+    else:
+        lines.append("No workouts in the last 30 days. Time to start.")
+    
+    # This week's training volume
+    week_start = date.today() - timedelta(days=date.today().weekday())
+    this_week = [a for a in all_recent if date.fromisoformat(a["date"]) >= week_start]
+    week_types = [a["type"] for a in this_week]
+    target_sessions = 3  # default weekly target
+    lines.append(f"This week: {len(this_week)}/{target_sessions} sessions ({', '.join(week_types) if week_types else 'none yet'})")
+    remaining_days = 6 - date.today().weekday()
+    if len(this_week) < target_sessions and remaining_days > 0:
+        needed = target_sessions - len(this_week)
+        lines.append(f"  Need {needed} more session(s) in {remaining_days} remaining day(s).")
+    
+    # 2-week training rhythm
+    two_weeks = db.get_recent_activities(days=14)
+    week1 = [a for a in two_weeks if date.fromisoformat(a["date"]) >= date.today() - timedelta(days=7)]
+    week2 = [a for a in two_weeks if date.fromisoformat(a["date"]) < date.today() - timedelta(days=7)]
+    lines.append(f"Training rhythm: this week {len(week1)} | last week {len(week2)} sessions")
+    if len(week1) < len(week2):
+        lines.append("  Frequency dropping. Maintain consistency.")
+    
+    return "\n".join(lines)
+
+
 def daily_summary(db: Database) -> str:
-    parts = [recovery_insights(db)]
+    parts = [recovery_insights(db), training_accountability(db)]
 
     activities = db.get_recent_activities(days=7)
     if activities:

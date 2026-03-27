@@ -151,12 +151,18 @@ class AICoach:
 
     def morning_briefing(self, metrics: dict[str, Any]) -> str:
         from .insights import daily_summary
+        from pathlib import Path
 
         computed = daily_summary(self.db)
+
+        # Read fitness signal if available
+        fitness_signal_path = Path.home() / "ai" / "data" / "signals" / "fitness.txt"
+        fitness_signal = fitness_signal_path.read_text().strip() if fitness_signal_path.exists() else "No fitness signal available."
 
         prompt = self._load_prompt("morning").format(
             metrics=_format_metrics(metrics),
             computed_insights=computed,
+            fitness_signal=fitness_signal,
         )
         return self._call_ai(prompt + self._memory_context())
 
