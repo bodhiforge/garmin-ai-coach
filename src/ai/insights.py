@@ -447,6 +447,223 @@ def training_accountability(db: Database) -> str:
     return "\n".join(lines)
 
 
+
+
+def sleep_quality_insights(db) -> str:
+    """Deep sleep analysis using v4 stage data."""
+    from datetime import date
+    stages = db.get_sleep_stages(days=7)
+    if not stages:
+        return ""
+
+    lines = ["## Sleep Quality (computed)"]
+    today = stages[0]
+    total = today.get("sleep_duration_min") or 0
+
+    deep = today.get("sleep_deep_min") or 0
+    light = today.get("sleep_light_min") or 0
+    rem = today.get("sleep_rem_min") or 0
+    awake = today.get("sleep_awake_min") or 0
+
+    deep_pct = round(deep / total * 100) if total > 0 else 0
+    rem_pct = round(rem / total * 100) if total > 0 else 0
+
+    lines.append(f"Last night: deep {deep}m ({deep_pct}%) | light {light}m | REM {rem}m ({rem_pct}%) | awake {awake}m")
+
+    # Score breakdown
+    score = today.get("sleep_score") or 0
+    restlessness = today.get("sleep_score_restlessness") or "?"
+    restless_count = today.get("restless_moments") or 0
+    bb_charge = today.get("bb_sleep_charge") or 0
+    lines.append(f"Score: {score}/100 | Restlessness: {restlessness} ({restless_count} moments) | BB recharged: +{bb_charge}")
+
+    # Deep sleep assessment
+    # Target: 15-25% of total sleep should be deep
+    if deep_pct < 15:
+        lines.append(f"  ⚠️ Deep sleep {deep_pct}% — below 15% target. Recovery and muscle repair compromised.")
+    elif deep_pct >= 20:
+        lines.append(f"  ✅ Deep sleep {deep_pct}% — excellent recovery quality.")
+
+    # REM assessment (target: 20-25%)
+    if rem_pct < 15:
+        lines.append(f"  ⚠️ REM {rem_pct}% — below target. May affect learning consolidation.")
+
+    # 7-day sleep trends
+    if len(stages) >= 3:
+        avg_deep = sum((s.get("sleep_deep_min") or 0) for s in stages) / len(stages)
+        avg_total = sum((s.get("sleep_duration_min") or 0) for s in stages) / len(stages)
+        avg_deep_pct = round(avg_deep / avg_total * 100) if avg_total > 0 else 0
+        avg_bb_charge = sum((s.get("bb_sleep_charge") or 0) for s in stages) / len(stages)
+
+        lines.append(f"7-day avg: deep {avg_deep:.0f}m ({avg_deep_pct}%) | total {avg_total:.0f}m | BB charge {avg_bb_charge:.0f}")
+
+        # Sleep debt
+        target_min = 420  # 7 hours
+        debt_per_night = [(target_min - (s.get("sleep_duration_min") or 0)) for s in stages]
+        total_debt = sum(max(0, d) for d in debt_per_night)
+        if total_debt > 120:
+            lines.append(f"  ⚠️ Sleep debt: {total_debt:.0f}m ({total_debt/60:.1f}h) accumulated over {len(stages)} days")
+
+    return "\n".join(lines)
+
+
+def bb_dynamics_insights(db) -> str:
+    """Body Battery charge/drain analysis using v4 data."""
+    dynamics = db.get_bb_dynamics(days=7)
+    if not dynamics:
+        return ""
+
+    lines = ["## Body Battery Dynamics (computed)"]
+    today = dynamics[0]
+
+    at_wake = today.get("bb_at_wake") or 0
+    highest = today.get("bb_highest") or 0
+    lowest = today.get("bb_lowest") or 0
+    drained = today.get("bb_drained") or 0
+    charge = today.get("bb_sleep_charge") or 0
+    feedback = today.get("bb_feedback") or ""
+
+    lines.append(f"Today: wake {at_wake} | high {highest} | low {lowest} | drained {drained} | sleep charge +{charge}")
+    if feedback:
+        lines.append(f"Garmin feedback: {feedback}")
+
+    # Charge efficiency (how much BB gained per hour of sleep)
+    # We can estimate from sleep duration if available
+    if charge > 0:
+        if charge >= 50:
+            lines.append("  ✅ Strong overnight recharge — body recovering well")
+        elif charge < 30:
+            lines.append("  ⚠️ Weak overnight recharge (<30) — poor recovery quality despite sleep")
+
+    # 7-day trend
+    if len(dynamics) >= 3:
+        avg_wake = sum((d.get("bb_at_wake") or 0) for d in dynamics) / len(dynamics)
+        avg_charge = sum((d.get("bb_sleep_charge") or 0) for d in dynamics) / len(dynamics)
+        lines.append(f"7-day avg: wake BB {avg_wake:.0f} | charge {avg_charge:.0f}")
+
+        # Declining wake BB trend
+        recent_3_wake = [d.get("bb_at_wake") or 0 for d in dynamics[:3]]
+        if len(recent_3_wake) == 3 and all(recent_3_wake[i] <= recent_3_wake[i+1] for i in range(2)):
+            lines.append("  ⚠️ Wake BB declining 3 days — accumulated fatigue or poor sleep quality")
+
+    return "\n".join(lines)
+
+
+def readiness_attribution(db) -> str:
+    """Explain WHY readiness is what it is using factor breakdown."""
+    factors = db.get_readiness_factors(days=3)
+    if not factors:
+        return ""
+
+    today = factors[0]
+    score = today.get("training_readiness_score")
+    level = today.get("training_readiness_level")
+    if score is None:
+        return ""
+
+    lines = [f"## Readiness Attribution (computed)"]
+    lines.append(f"Score: {score}/100 ({level})")
+
+    # Factor breakdown
+    factor_map = {
+        "readiness_sleep_factor": "Sleep",
+        "readiness_hrv_factor": "HRV",
+        "readiness_recovery_factor": "Recovery",
+        "readiness_acwr_factor": "Training Load",
+        "readiness_stress_factor": "Stress",
+    }
+
+    limiters = []
+    strengths = []
+    for col, label in factor_map.items():
+        val = today.get(col)
+        if val is None:
+            continue
+        if val in ("LOW", "POOR"):
+            limiters.append(f"{label}: {val}")
+        elif val in ("VERY_GOOD", "EXCELLENT"):
+            strengths.append(f"{label}: {val}")
+
+    if limiters:
+        lines.append(f"Limiting factors: {', '.join(limiters)}")
+    if strengths:
+        lines.append(f"Strengths: {', '.join(strengths)}")
+
+    feedback = today.get("readiness_feedback")
+    if feedback:
+        lines.append(f"Garmin insight: {feedback}")
+
+    recovery_h = today.get("recovery_time_hours")
+    if recovery_h is not None and recovery_h > 0:
+        lines.append(f"Recovery time remaining: {recovery_h}h")
+
+    # Readiness trend
+    if len(factors) >= 3:
+        scores = [f.get("training_readiness_score") or 0 for f in factors[:3]]
+        if all(scores[i] <= scores[i+1] for i in range(2)):
+            lines.append("  ⚠️ Readiness declining 3 days")
+        elif all(scores[i] >= scores[i+1] for i in range(2)):
+            lines.append("  ✅ Readiness improving 3 days")
+
+    return "\n".join(lines)
+
+
+def load_with_corrections(db) -> str:
+    """Training load analysis with basketball corrections applied."""
+    corrected_7d = db.get_corrected_weekly_load(days=7)
+    corrected_28d = db.get_corrected_weekly_load(days=28)
+
+    metrics = db.get_recent_metrics(days=1)
+    if not metrics:
+        return ""
+
+    today = metrics[0]
+    acute = today.get("acute_load") or 0
+    chronic = today.get("chronic_load") or 0
+    acwr = today.get("acwr_ratio") or 0
+    status = today.get("training_status") or "?"
+    balance = today.get("load_balance") or "?"
+
+    lines = ["## Training Load (computed, basketball-corrected)"]
+    lines.append(f"Acute: {acute:.0f} | Chronic: {chronic:.0f} | ACWR: {acwr:.2f} | Status: {status}")
+    lines.append(f"Corrected 7-day load: {corrected_7d:.0f} (includes estimated basketball load)")
+    lines.append(f"Load balance: {balance}")
+
+    # ACWR zones
+    if acwr > 1.3:
+        lines.append("  🔴 ACWR > 1.3 — injury risk zone. Reduce training volume.")
+    elif acwr > 1.1:
+        lines.append("  🟡 ACWR 1.1-1.3 — high load. Monitor recovery closely.")
+    elif acwr >= 0.8:
+        lines.append("  🟢 ACWR 0.8-1.1 — sweet spot. Progress safely.")
+    else:
+        lines.append("  ⚪ ACWR < 0.8 — detraining zone. Increase volume if readiness allows.")
+
+    # Load balance interpretation
+    if balance and "SHORTAGE" in str(balance):
+        lines.append(f"  ⚠️ {balance} — add more aerobic work (swim, easy run, cycling)")
+
+    return "\n".join(lines)
+
+
+def concerns_summary(db) -> str:
+    """Format active concerns for the LLM."""
+    concerns = db.get_active_concerns()
+    if not concerns:
+        return ""
+
+    lines = ["## Active Concerns (from user)"]
+    for c in concerns:
+        line = f"- [{c['created_date']}] {c['concern']}"
+        if c.get("impact"):
+            line += f" → {c['impact']}"
+        if c.get("sport_affected"):
+            line += f" (affects: {c['sport_affected']})"
+        lines.append(line)
+
+    return "\n".join(lines)
+
+
 def daily_summary(db: Database) -> str:
     parts = [recovery_insights(db), training_accountability(db)]
 

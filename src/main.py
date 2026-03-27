@@ -92,7 +92,7 @@ def cmd_sync(args: argparse.Namespace) -> None:
 
 
 def cmd_morning(args: argparse.Namespace) -> None:
-    """Generate and send morning data snapshot (no LLM call)."""
+    """Generate and send AI-powered morning training briefing."""
     from datetime import date, timedelta
     config, _, _, sync, coach, bot = build_components(args.config)
 
@@ -104,20 +104,7 @@ def cmd_morning(args: argparse.Namespace) -> None:
         yesterday = date.today() - timedelta(days=1)
         metrics = sync.client.get_daily_metrics(yesterday)
 
-    sleep_min = metrics.get("sleep_duration_min") or 0
-    sleep_h = sleep_min // 60
-    sleep_m = sleep_min % 60
-    sleep_start = metrics.get("sleep_start", "?")
-    sleep_end = metrics.get("sleep_end", "?")
-    briefing = (
-        f"\U0001f3d4 Body Status\n"
-        f"HRV: {metrics.get('hrv_last_night', '?')}ms\n"
-        f"Sleep: {sleep_h}h{sleep_m:02d}m ({sleep_start}\u2013{sleep_end})\n"
-        f"BB: {metrics.get('body_battery_am', '?')}/100\n"
-        f"RHR: {metrics.get('resting_hr', '?')}bpm\n"
-        f"Readiness: {metrics.get('training_readiness_score', '?')}/100"
-    )
-
+    briefing = coach.morning_briefing(metrics)
     print(briefing)
 
     if not args.dry_run:

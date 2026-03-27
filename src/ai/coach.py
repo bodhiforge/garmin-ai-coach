@@ -159,10 +159,15 @@ class AICoach:
         fitness_signal_path = Path.home() / "ai" / "data" / "signals" / "fitness.txt"
         fitness_signal = fitness_signal_path.read_text().strip() if fitness_signal_path.exists() else "No fitness signal available."
 
+        # Read fitness plan
+        fitness_plan_path = Path.home() / "ai" / "data" / "fitness-plan.md"
+        fitness_plan = fitness_plan_path.read_text().strip() if fitness_plan_path.exists() else "No fitness plan available."
+
         prompt = self._load_prompt("morning").format(
             metrics=_format_metrics(metrics),
             computed_insights=computed,
             fitness_signal=fitness_signal,
+            fitness_plan=fitness_plan,
         )
         return self._call_ai(prompt + self._memory_context())
 
