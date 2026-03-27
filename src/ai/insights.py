@@ -664,6 +664,93 @@ def concerns_summary(db) -> str:
     return "\n".join(lines)
 
 
+
+def weekly_gap_analysis(db) -> str:
+    """Detect what's missing from this week's training and suggest what to fill."""
+    from datetime import date, timedelta
+
+    today = date.today()
+    week_start = today - timedelta(days=today.weekday())  # Monday
+    days_left = 6 - today.weekday()  # remaining days including today
+
+    activities = db.get_recent_activities(days=7)
+    this_week = [a for a in activities if date.fromisoformat(a["date"]) >= week_start]
+
+    types_done = [a["type"] for a in this_week]
+    dates_done = [a["date"] for a in this_week]
+
+    # What's been done
+    has_gym = "strength" in types_done
+    has_swim = "swimming" in types_done
+    has_ski = "skiing" in types_done
+    has_basketball = "basketball" in types_done
+    gym_count = types_done.count("strength")
+    swim_count = types_done.count("swimming")
+
+    # Weekly targets
+    # Basketball: 2x (Wed/Fri, fixed)
+    # Ski: 1-2x (weather-dependent, bonus)
+    # Gym: 2x (fill available days, priority: back/shoulders + lower/core)
+    # Swim: 1x minimum (Costa Rica prep, deadline May 2026)
+
+    lines = ["## Weekly Gap Analysis (computed)"]
+    lines.append(f"Done this week: {len(this_week)} sessions ({', '.join(types_done) if types_done else 'none'})")
+    lines.append(f"Days left (including today): {days_left + 1}")
+
+    missing = []
+    if gym_count < 2:
+        needed = 2 - gym_count
+        missing.append(f"Gym: need {needed} more (target 2x/week for body recomp)")
+    if swim_count < 1:
+        missing.append("Swim: need 1 (Costa Rica freestyle prep — 9 weeks out)")
+
+    if missing:
+        lines.append("Missing this week:")
+        for m in missing:
+            lines.append(f"  - {m}")
+
+        # Suggest when to fit them
+        # Basketball: Wed/Fri evening → morning is free for gym/swim
+        # Ski: unpredictable, but usually takes the whole day
+        dow = today.weekday()
+        dow_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+        suggestions = []
+        for offset in range(days_left + 1):
+            check_day = today + timedelta(days=offset)
+            check_dow = check_day.weekday()
+            check_date = check_day.isoformat()
+
+            # Skip if already has activity today
+            if check_date in dates_done and offset == 0:
+                continue
+
+            if check_dow in (2, 4):  # Wed/Fri — basketball evening
+                if gym_count < 2:
+                    suggestions.append(f"{dow_names[check_dow]} {check_date}: morning gym (basketball is evening)")
+                elif swim_count < 1:
+                    suggestions.append(f"{dow_names[check_dow]} {check_date}: morning swim (basketball is evening)")
+            elif check_dow == 6:  # Sunday — rest preferred
+                if swim_count < 1:
+                    suggestions.append(f"Sun {check_date}: light swim (active recovery)")
+            else:  # Mon/Tue/Thu/Sat — open
+                if gym_count < 2:
+                    suggestions.append(f"{dow_names[check_dow]} {check_date}: gym")
+                    gym_count += 1
+                elif swim_count < 1:
+                    suggestions.append(f"{dow_names[check_dow]} {check_date}: swim")
+                    swim_count += 1
+
+        if suggestions:
+            lines.append("Suggested slots:")
+            for s in suggestions[:3]:
+                lines.append(f"  → {s}")
+    else:
+        lines.append("All weekly targets met ✅")
+
+    return "\n".join(lines)
+
+
 def daily_summary(db: Database) -> str:
     parts = [
         readiness_attribution(db),
@@ -672,6 +759,7 @@ def daily_summary(db: Database) -> str:
         bb_dynamics_insights(db),
         load_with_corrections(db),
         training_accountability(db),
+        weekly_gap_analysis(db),
         concerns_summary(db),
     ]
 
