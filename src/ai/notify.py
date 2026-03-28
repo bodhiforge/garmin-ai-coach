@@ -97,6 +97,22 @@ def _check_rhr_elevated(db: Database) -> tuple[int, str]:
     return 0, ""
 
 
+def _check_basketball_unlogged(db: Database) -> tuple[int, str]:
+    """Detect basketball sessions with suspiciously low training_load (no watch worn)."""
+    activities = db.get_recent_activities(days=2, activity_type="basketball")
+    if not activities:
+        return 0, ""
+    latest = activities[0]
+    load = latest.get("training_load") or 0
+    if load < 5:  # Normal basketball should be 50-150+
+        hours = db.hours_since_last_notification(f"basketball_unlogged_{latest['id']}")
+        if hours < 48:
+            return 0, ""
+        duration = latest.get("duration_min", "?")
+        return 2, f"Basketball session ({duration:.0f}min) looks untracked (load={load:.1f}) — remember to log it manually in Garmin app!"
+    return 0, ""
+
+
 def _check_inactive(db: Database) -> tuple[int, str]:
     activities = db.get_recent_activities(days=30)
     if not activities:
@@ -126,6 +142,7 @@ def should_notify(db: Database) -> tuple[bool, list[str], int]:
         _check_hrv_trend,
         _check_rhr_elevated,
         _check_inactive,
+        _check_basketball_unlogged,
     ]
     
     total_score = 0
