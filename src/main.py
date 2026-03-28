@@ -72,57 +72,26 @@ def cmd_bot(args: argparse.Namespace) -> None:
     bot.run()
 
 
-def cmd_sync(args: argparse.Namespace) -> None:
-    """One-shot sync of Garmin data. Auto-sends morning brief on wake-up detection."""
-    config, _, _, sync, coach, bot = build_components(args.config)
-
-    metrics = sync.sync_daily_metrics()
-    print(f"Daily metrics synced: HRV={metrics.get('hrv_last_night')}ms, "
-          f"RHR={metrics.get('resting_hr')}bpm")
-
-    new_activities = sync.sync_activities()
-    print(f"Activities synced: {len(new_activities)} new")
-
-    # Auto-push AI morning brief when wake-up detected
-    if getattr(sync, '_last_wake_detected', False):
-        import asyncio
-        briefing = coach.morning_briefing(metrics)
-        asyncio.run(bot.send_message(briefing))
-        print("Wake-up detected — AI morning brief sent to Telegram.")
-
-
-def cmd_morning(args: argparse.Namespace) -> None:
-    """Sync data + write training digest to file. No LLM call.
-    The digest is consumed by Riko's OpenClaw cron which uses Opus."""
+def _write_training_digest(config, sync, coach, metrics) -> None:
+    """Write training digest file for OpenClaw consumption."""
     from datetime import date, timedelta
-    from pathlib import Path
     from .ai.insights import daily_summary
-
-    config, _, _, sync, coach, bot = build_components(args.config)
-
-    metrics = sync.sync_daily_metrics()
-    sync.sync_activities()
 
     # If today has no sleep data, use yesterday's
     if metrics.get("sleep_duration_min") is None:
         yesterday = date.today() - timedelta(days=1)
         metrics = sync.client.get_daily_metrics(yesterday)
 
-    # Computed insights (pure Python, no LLM)
     computed = daily_summary(coach.db)
 
-    # Format raw metrics
     from .ai.coach import _format_metrics
     raw_metrics = _format_metrics(metrics)
 
-    # Read fitness plan
     plan_path = Path.home() / "ai" / "data" / "fitness-plan.md"
     fitness_plan = plan_path.read_text().strip() if plan_path.exists() else ""
 
-    # Read user memory context
     memory_context = coach.get_memory()
 
-    # Write digest
     digest_path = Path.home() / "ai" / "data" / "signals" / "training-digest.txt"
     digest_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -145,7 +114,56 @@ def cmd_morning(args: argparse.Namespace) -> None:
     digest_path.write_text(digest)
     print(f"Digest written to {digest_path} ({len(digest)} chars)")
 
+
+def _trigger_neve_push() -> None:
+    """Trigger the OpenClaw Neve Training Push cron job."""
+    import subprocess
+    neve_cron_id = "aedde04b-7a93-4d4d-b7ea-f7ecb255b910"
+    try:
+        result = subprocess.run(
+            ["openclaw", "cron", "run", neve_cron_id],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0:
+            print(f"Neve push triggered via OpenClaw cron {neve_cron_id}")
+        else:
+            print(f"WARNING: OpenClaw trigger failed: {result.stderr[:200]}")
+    except Exception as e:
+        print(f"WARNING: Could not trigger Neve push: {e}")
+
+
+def cmd_sync(args: argparse.Namespace) -> None:
+    """One-shot sync of Garmin data. Auto-sends morning brief on wake-up detection."""
+    config, _, _, sync, coach, bot = build_components(args.config)
+
+    metrics = sync.sync_daily_metrics()
+    print(f"Daily metrics synced: HRV={metrics.get('hrv_last_night')}ms, "
+          f"RHR={metrics.get('resting_hr')}bpm")
+
+    new_activities = sync.sync_activities()
+    print(f"Activities synced: {len(new_activities)} new")
+
+    # On wake-up detection: write digest + trigger OpenClaw Neve push
+    if getattr(sync, '_last_wake_detected', False):
+        print("Wake-up detected — writing training digest and triggering Neve push...")
+        _write_training_digest(config, sync, coach, metrics)
+        _trigger_neve_push()
+
+
+def cmd_morning(args: argparse.Namespace) -> None:
+    """Sync data + write training digest to file. No LLM call.
+    The digest is consumed by Riko's OpenClaw cron which uses Opus."""
+    config, _, _, sync, coach, bot = build_components(args.config)
+
+    metrics = sync.sync_daily_metrics()
+    sync.sync_activities()
+
+    _write_training_digest(config, sync, coach, metrics)
+
     if args.dry_run:
+        from pathlib import Path
+        digest_path = Path.home() / "ai" / "data" / "signals" / "training-digest.txt"
+        digest = digest_path.read_text()
         print("\n--- DIGEST PREVIEW ---")
         print(digest[:2000])
         if len(digest) > 2000:
