@@ -121,7 +121,7 @@ def _trigger_neve_push() -> None:
     neve_cron_id = "aedde04b-7a93-4d4d-b7ea-f7ecb255b910"
     try:
         result = subprocess.run(
-            ["openclaw", "cron", "run", neve_cron_id],
+            ["/opt/homebrew/bin/openclaw", "cron", "run", neve_cron_id],
             capture_output=True, text=True, timeout=30,
         )
         if result.returncode == 0:
