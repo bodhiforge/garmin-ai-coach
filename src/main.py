@@ -118,7 +118,7 @@ def _write_training_digest(config, sync, coach, metrics) -> None:
 def _trigger_neve_push() -> None:
     """Trigger the OpenClaw Neve Training Push cron job."""
     import subprocess
-    neve_cron_id = "aedde04b-7a93-4d4d-b7ea-f7ecb255b910"
+    neve_cron_id = "1917f562-a656-4cd8-9319-7c442687299d"
     try:
         result = subprocess.run(
             ["/opt/homebrew/bin/openclaw", "cron", "run", neve_cron_id],
