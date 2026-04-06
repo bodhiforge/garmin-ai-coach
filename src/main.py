@@ -117,19 +117,26 @@ def _write_training_digest(config, sync, coach, metrics) -> None:
 
 def _trigger_neve_push() -> None:
     """Trigger the OpenClaw Neve Training Push cron job."""
+    import shutil
     import subprocess
-    neve_cron_id = "1917f562-a656-4cd8-9319-7c442687299d"
-    try:
-        result = subprocess.run(
-            ["/opt/homebrew/bin/openclaw", "cron", "run", neve_cron_id],
-            capture_output=True, text=True, timeout=30,
-        )
-        if result.returncode == 0:
-            print(f"Neve push triggered via OpenClaw cron {neve_cron_id}")
-        else:
-            print(f"WARNING: OpenClaw trigger failed: {result.stderr[:200]}")
-    except Exception as e:
-        print(f"WARNING: Could not trigger Neve push: {e}")
+    import time
+    neve_cron_id = "2950ccf7-6ba9-4f02-b3c2-9d802b1d520c"
+    openclaw_bin = shutil.which("openclaw") or "/opt/homebrew/bin/openclaw"
+    for attempt in range(3):
+        try:
+            result = subprocess.run(
+                [openclaw_bin, "cron", "run", neve_cron_id],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode == 0:
+                print(f"Neve push triggered via OpenClaw cron {neve_cron_id}")
+                return
+            print(f"WARNING: OpenClaw trigger failed (attempt {attempt + 1}): {result.stderr[:200]}")
+        except Exception as e:
+            print(f"WARNING: Neve push attempt {attempt + 1} failed: {e}")
+        if attempt < 2:
+            time.sleep(10)
+    print("ERROR: All 3 Neve push attempts failed.")
 
 
 def cmd_sync(args: argparse.Namespace) -> None:
