@@ -150,11 +150,10 @@ def cmd_sync(args: argparse.Namespace) -> None:
     new_activities = sync.sync_activities()
     print(f"Activities synced: {len(new_activities)} new")
 
-    # On wake-up detection: write digest + trigger OpenClaw Neve push
+    # On wake-up detection: write digest for Riko to consume
     if getattr(sync, '_last_wake_detected', False):
-        print("Wake-up detected — writing training digest and triggering Neve push...")
+        print("Wake-up detected — writing training digest for Riko...")
         _write_training_digest(config, sync, coach, metrics)
-        _trigger_neve_push()
 
 
 def cmd_morning(args: argparse.Namespace) -> None:
