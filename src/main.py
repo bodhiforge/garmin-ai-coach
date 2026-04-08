@@ -115,32 +115,52 @@ def _write_training_digest(config, sync, coach, metrics) -> None:
     print(f"Digest written to {digest_path} ({len(digest)} chars)")
 
 
-def _trigger_neve_push() -> None:
-    """Trigger the OpenClaw Neve Training Push cron job."""
+def _trigger_riko_analysis() -> bool:
+    """Trigger Riko (OpenClaw) to generate morning report. Returns True if triggered."""
     import shutil
     import subprocess
-    import time
-    neve_cron_id = "2950ccf7-6ba9-4f02-b3c2-9d802b1d520c"
+    neve_cron_id = "1917f562-a656-4cd8-9319-7c442687299d"
     openclaw_bin = shutil.which("openclaw") or "/opt/homebrew/bin/openclaw"
-    for attempt in range(3):
-        try:
-            result = subprocess.run(
-                [openclaw_bin, "cron", "run", neve_cron_id],
-                capture_output=True, text=True, timeout=30,
-            )
-            if result.returncode == 0:
-                print(f"Neve push triggered via OpenClaw cron {neve_cron_id}")
-                return
-            print(f"WARNING: OpenClaw trigger failed (attempt {attempt + 1}): {result.stderr[:200]}")
-        except Exception as e:
-            print(f"WARNING: Neve push attempt {attempt + 1} failed: {e}")
-        if attempt < 2:
-            time.sleep(10)
-    print("ERROR: All 3 Neve push attempts failed.")
+    try:
+        result = subprocess.run(
+            [openclaw_bin, "cron", "run", neve_cron_id],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0:
+            print(f"Riko analysis triggered (cron {neve_cron_id})")
+            return True
+        print(f"WARNING: Riko trigger failed: {result.stderr[:200]}")
+    except Exception as e:
+        print(f"WARNING: Riko trigger failed: {e}")
+    return False
+
+
+def _write_neve_data(metrics: dict) -> None:
+    """Write today's wakeup metrics for Riko to read."""
+    import json
+    from datetime import date
+    data_path = Path.home() / "ai" / "data" / "neve-today.json"
+    data = {
+        "date": str(date.today()),
+        "sleep_end": metrics.get("sleep_end", ""),
+        "readiness_score": metrics.get("training_readiness_score", 0),
+        "readiness_level": metrics.get("training_readiness_level", ""),
+        "hrv": metrics.get("hrv_last_night", 0),
+        "sleep_score": metrics.get("sleep_score", 0),
+        "body_battery_am": metrics.get("body_battery_am", 0),
+        "bb_at_wake": metrics.get("bb_at_wake", 0),
+        "acwr": metrics.get("acwr_ratio", 0),
+        "stress_avg": metrics.get("stress_avg", 0),
+        "resting_hr": metrics.get("resting_hr", 0),
+        "sleep_min": metrics.get("sleep_duration_min", 0),
+    }
+    data_path.write_text(json.dumps(data))
+    print(f"Wakeup data written to {data_path}")
 
 
 def cmd_sync(args: argparse.Namespace) -> None:
-    """One-shot sync of Garmin data. Auto-sends morning brief on wake-up detection."""
+    """Sync Garmin data. Manages morning push: detect wake -> trigger Riko -> send via Neve."""
+    from datetime import date
     config, _, _, sync, coach, bot = build_components(args.config)
 
     metrics = sync.sync_daily_metrics()
@@ -150,10 +170,60 @@ def cmd_sync(args: argparse.Namespace) -> None:
     new_activities = sync.sync_activities()
     print(f"Activities synced: {len(new_activities)} new")
 
-    # On wake-up detection: write digest for Riko to consume
-    if getattr(sync, '_last_wake_detected', False):
-        print("Wake-up detected — writing training digest for Riko...")
+    # --- Morning push state machine ---
+    today = str(date.today())
+    flag_dir = Path.home() / "ai" / "data"
+    flag_sent = flag_dir / f"neve-pushed-{today}"
+    flag_triggered = flag_dir / f"neve-triggered-{today}"
+    report_path = flag_dir / "signals" / "morning-report.txt"
+
+    # Already sent today? Done.
+    if flag_sent.exists():
+        return
+
+    # Phase 1: Detect wakeup -> write data + trigger Riko
+    if not flag_triggered.exists() and getattr(sync, '_last_wake_detected', False):
+        print("Wake-up detected — writing data and triggering Riko...")
+        _write_neve_data(metrics)
         _write_training_digest(config, sync, coach, metrics)
+        if _trigger_riko_analysis():
+            flag_triggered.touch()
+        return
+
+    # Phase 2: Report ready -> send via Neve bot
+    if flag_triggered.exists() and report_path.exists():
+        import os
+        report_mtime = os.path.getmtime(report_path)
+        flag_mtime = os.path.getmtime(flag_triggered)
+        # Report must be newer than trigger (this run, not stale)
+        if report_mtime > flag_mtime:
+            report = report_path.read_text().strip()
+            if report:
+                try:
+                    asyncio.run(bot.send_message(report))
+                    flag_sent.touch()
+                    print(f"Morning push sent via Neve ({len(report)} chars)")
+                    # Cleanup old flags
+                    for f in flag_dir.glob("neve-pushed-*"):
+                        if f.name != flag_sent.name:
+                            age = (date.today() - date.fromisoformat(f.name.replace("neve-pushed-", ""))).days
+                            if age > 7:
+                                f.unlink(missing_ok=True)
+                    for f in flag_dir.glob("neve-triggered-*"):
+                        if f.name != flag_triggered.name:
+                            f.unlink(missing_ok=True)
+                except Exception as e:
+                    print(f"ERROR: Neve send failed: {e} — will retry next sync")
+            return
+
+    # Phase 3: Triggered but no report yet -> retry trigger if stale
+    if flag_triggered.exists() and not flag_sent.exists():
+        import os, time
+        trigger_age = time.time() - os.path.getmtime(flag_triggered)
+        if trigger_age > 600:  # 10 min without report = retry
+            print("Riko report overdue (>10min) — retrying trigger...")
+            if _trigger_riko_analysis():
+                flag_triggered.touch()  # reset timer
 
 
 def cmd_morning(args: argparse.Namespace) -> None:
