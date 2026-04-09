@@ -182,12 +182,14 @@ def cmd_sync(args: argparse.Namespace) -> None:
         return
 
     # Phase 1: Detect wakeup -> write data + trigger Riko
+    # Always create flag_triggered on wake detection so Phase 3 can retry
+    # even if the initial trigger fails (e.g., node missing from cron PATH).
     if not flag_triggered.exists() and getattr(sync, '_last_wake_detected', False):
         print("Wake-up detected — writing data and triggering Riko...")
         _write_neve_data(metrics)
         _write_training_digest(config, sync, coach, metrics)
-        if _trigger_riko_analysis():
-            flag_triggered.touch()
+        flag_triggered.touch()
+        _trigger_riko_analysis()
         return
 
     # Phase 2: Report ready -> send via Neve bot
