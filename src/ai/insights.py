@@ -759,6 +759,9 @@ def daily_summary(db: Database) -> str:
         bb_dynamics_insights(db),
         load_with_corrections(db),
         training_accountability(db),
+        recent_activity_detail(db, hours=48),
+        muscle_group_fatigue(db),
+        training_intensity_trend(db),
         weekly_gap_analysis(db),
         concerns_summary(db),
     ]
@@ -781,3 +784,383 @@ def daily_summary(db: Database) -> str:
         parts.append(gym_insights(db))
 
     return "\n\n".join(p for p in parts if p)
+"""
+New insights for Tier 3 digest enhancements.
+Appended to src/ai/insights.py.
+"""
+
+# ─────────────────────────────────────────────────────────────
+# SESSION INTENT CLASSIFIER
+# ─────────────────────────────────────────────────────────────
+
+def _session_intent(activity: dict) -> tuple[str, str]:
+    """
+    Classify a session as easy / moderate / tempo / intervals / competitive / strength / unknown.
+    Returns (label, one-line explanation).
+    """
+    z1 = activity.get("hr_zone1_sec") or 0
+    z2 = activity.get("hr_zone2_sec") or 0
+    z3 = activity.get("hr_zone3_sec") or 0
+    z4 = activity.get("hr_zone4_sec") or 0
+    z5 = activity.get("hr_zone5_sec") or 0
+    total = z1 + z2 + z3 + z4 + z5
+    type_ = (activity.get("type") or "").lower()
+    max_hr = activity.get("max_hr") or 0
+    label = activity.get("training_effect_label") or ""
+
+    if type_ in ("strength", "strength_training", "gym"):
+        return ("strength", "strength work")
+
+    if type_ == "basketball":
+        return ("competitive", "basketball game (full-body, high anaerobic)")
+
+    if total == 0:
+        return ("unknown", "no HR zone data")
+
+    pct_easy = (z1 + z2) / total
+    pct_hard = (z4 + z5) / total
+    pct_z5 = z5 / total
+
+    if pct_z5 >= 0.08 and max_hr >= 170:
+        return ("intervals", f"{pct_z5*100:.0f}% in Z5, max HR {max_hr}")
+    if pct_hard >= 0.30:
+        return ("tempo", f"{pct_hard*100:.0f}% in Z4+Z5")
+    if pct_easy >= 0.70:
+        return ("easy", f"{pct_easy*100:.0f}% in Z1-Z2")
+    return ("moderate", f"{pct_easy*100:.0f}% Z1-Z2 / {pct_hard*100:.0f}% Z4-Z5")
+
+
+def _estimated_recovery_hours(training_load: float, anaerobic_te: float, intent: str) -> int:
+    """
+    Heuristic recovery time in hours, based on Garmin's TE-based bands:
+      TE < 2.5: 12-24h (low-med)
+      TE 2.5-3.5: 24-36h (high)
+      TE 3.5-4.5: 36-60h (very high)
+      TE > 4.5: 60-96h (overreaching)
+    Capped at 96h (4 days) — longer implies structural issue, not session.
+    """
+    if training_load is None or training_load == 0:
+        return 0
+    # Use max TE as the primary recovery driver
+    te = max(anaerobic_te or 0, 0)
+    if te >= 4.5:
+        base = 72
+    elif te >= 3.5:
+        base = 48
+    elif te >= 2.5:
+        base = 30
+    elif te > 0:
+        base = 18
+    else:
+        base = max(12, min(36, training_load * 0.08))
+    multiplier = {
+        "intervals": 1.2,
+        "tempo": 1.1,
+        "competitive": 1.2,  # slight bump for full-body game stress
+        "strength": 1.15,
+        "moderate": 1.0,
+        "easy": 0.7,
+        "unknown": 1.0,
+    }.get(intent, 1.0)
+    return int(round(min(96, base * multiplier)))
+
+
+# ─────────────────────────────────────────────────────────────
+# RECENT ACTIVITY DETAIL (last 48h)
+# ─────────────────────────────────────────────────────────────
+
+def recent_activity_detail(db: Database, hours: int = 48) -> str:
+    """Per-session detail for the last N hours: HR zones, TE, intent, recovery state."""
+    from datetime import datetime, timezone
+
+    activities = db.get_recent_activities(days=3)
+    now = datetime.now()
+
+    recent = []
+    for a in activities:
+        st = a.get("start_time")
+        if not st:
+            continue
+        try:
+            dt = datetime.fromisoformat(st.replace("Z", "").split("+")[0])
+        except (ValueError, TypeError):
+            try:
+                dt = datetime.strptime(st[:19], "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                continue
+        hours_ago = (now - dt).total_seconds() / 3600
+        if hours_ago <= hours:
+            recent.append((a, dt, hours_ago))
+
+    if not recent:
+        return f"## Recent Activity Detail (last {hours}h)\nNo workouts in the last {hours}h."
+
+    lines = [f"## Recent Activity Detail (last {hours}h)"]
+
+    total_residual = 0.0
+    for a, dt, hrs_ago in recent:
+        name = a.get("activity_name") or a.get("type") or "workout"
+        type_ = a.get("type") or ""
+        dur_min = a.get("duration_min") or 0
+        dist_km = (a.get("distance_m") or 0) / 1000
+        elev_gain = a.get("elevation_gain") or 0
+        avg_hr = a.get("avg_hr") or 0
+        max_hr = a.get("max_hr") or 0
+        cal = a.get("calories") or 0
+        load = a.get("training_load") or 0
+        te_aer = a.get("aerobic_te") or 0
+        te_ana = a.get("anaerobic_te") or 0
+        te_label = a.get("training_effect_label") or ""
+
+        intent, intent_why = _session_intent(a)
+        needed_hrs = _estimated_recovery_hours(load, te_ana, intent)
+        recovered_pct = min(100, int(round((hrs_ago / needed_hrs) * 100))) if needed_hrs > 0 else 100
+        residual_load = load * max(0, 1 - (hrs_ago / needed_hrs)) if needed_hrs > 0 else 0
+        total_residual += residual_load
+
+        z1 = (a.get("hr_zone1_sec") or 0) // 60
+        z2 = (a.get("hr_zone2_sec") or 0) // 60
+        z3 = (a.get("hr_zone3_sec") or 0) // 60
+        z4 = (a.get("hr_zone4_sec") or 0) // 60
+        z5 = (a.get("hr_zone5_sec") or 0) // 60
+
+        block = [
+            f"\n{a.get('date')} {dt.strftime('%H:%M')} — {name} ({type_})",
+            f"  Duration: {dur_min:.0f}m | Distance: {dist_km:.1f}km | Elev gain: {elev_gain:.0f}m",
+            f"  Avg HR: {avg_hr} | Max HR: {max_hr} | Calories: {cal}",
+            f"  HR zones (min): Z1 {z1} | Z2 {z2} | Z3 {z3} | Z4 {z4} | Z5 {z5}",
+            f"  Training load: {load:.0f} | TE aerobic: {te_aer:.1f} | TE anaerobic: {te_ana:.1f} | {te_label}",
+            f"  Intent: {intent.upper()} ({intent_why})",
+            f"  Recovery: {hrs_ago:.1f}h elapsed / {needed_hrs}h needed = {recovered_pct}% recovered",
+        ]
+        lines.extend(block)
+
+    lines.append(f"\nTotal residual load from last {hours}h: {total_residual:.0f}")
+    if total_residual > 100:
+        lines.append("  ⚠️ Significant residual fatigue — factor into today's intensity.")
+    elif total_residual < 30:
+        lines.append("  ✓ Most recent training recovered; today is relatively fresh.")
+
+    return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────────────────────
+# MUSCLE GROUP FATIGUE TRACKER
+# ─────────────────────────────────────────────────────────────
+
+# Map activity type → muscle group load multipliers (sum need not = 1)
+# Values are share of session load attributed to each group.
+_MUSCLE_MAP_BY_TYPE = {
+    "hiking":        {"quads": 0.35, "calves": 0.25, "glutes": 0.20, "posterior_chain": 0.20, "core": 0.15},
+    "running":       {"quads": 0.30, "calves": 0.25, "glutes": 0.15, "posterior_chain": 0.20, "core": 0.15},
+    "basketball":    {"quads": 0.40, "calves": 0.25, "glutes": 0.20, "core": 0.20, "shoulders": 0.10},
+    "skiing":        {"quads": 0.45, "calves": 0.20, "core": 0.25, "posterior_chain": 0.10},
+    "snowboarding":  {"quads": 0.40, "calves": 0.20, "core": 0.25, "posterior_chain": 0.10},
+    "swimming":      {"shoulders": 0.35, "back": 0.30, "core": 0.25, "chest": 0.15, "posterior_chain": 0.10},
+    "cycling":       {"quads": 0.40, "glutes": 0.20, "calves": 0.15, "core": 0.15},
+    "tennis":        {"quads": 0.25, "core": 0.25, "shoulders": 0.25, "back": 0.15},
+    "strength":      {"full_body": 1.0},  # resolved from gym_sets when available
+}
+
+# Map gym exercises → primary muscle groups (used when strength session has sets data)
+_MUSCLE_MAP_BY_EXERCISE = {
+    # lower
+    "squat": {"quads": 0.6, "glutes": 0.3, "core": 0.1},
+    "goblet_squat": {"quads": 0.6, "glutes": 0.3, "core": 0.1},
+    "leg_press": {"quads": 0.7, "glutes": 0.3},
+    "rdl": {"posterior_chain": 0.7, "glutes": 0.3},
+    "romanian_deadlift": {"posterior_chain": 0.7, "glutes": 0.3},
+    "hip_thrust": {"glutes": 0.7, "posterior_chain": 0.3},
+    "hip_raise": {"glutes": 0.7, "posterior_chain": 0.3},
+    "leg_curl": {"posterior_chain": 1.0},
+    "leg_extension": {"quads": 1.0},
+    "lunge": {"quads": 0.5, "glutes": 0.3, "posterior_chain": 0.2},
+    # pull
+    "row": {"back": 0.7, "shoulders": 0.2, "core": 0.1},
+    "cable_row": {"back": 0.7, "shoulders": 0.2, "core": 0.1},
+    "seated_row": {"back": 0.7, "shoulders": 0.2, "core": 0.1},
+    "pulldown": {"back": 0.8, "shoulders": 0.2},
+    "lat_pulldown": {"back": 0.8, "shoulders": 0.2},
+    "pullup": {"back": 0.8, "shoulders": 0.2},
+    "face_pull": {"shoulders": 0.6, "back": 0.4},
+    # push
+    "bench": {"chest": 0.6, "shoulders": 0.3, "core": 0.1},
+    "bench_press": {"chest": 0.6, "shoulders": 0.3, "core": 0.1},
+    "shoulder_press": {"shoulders": 0.8, "core": 0.2},
+    "overhead_press": {"shoulders": 0.8, "core": 0.2},
+    # core
+    "plank": {"core": 1.0},
+    "pallof": {"core": 1.0},
+    "ab_crunch": {"core": 1.0},
+}
+
+
+def _decay(load: float, hours_ago: float, tau_hours: float = 48.0) -> float:
+    """Exponential decay of muscle-group load with τ hours."""
+    import math
+    if hours_ago <= 0:
+        return load
+    return load * math.exp(-hours_ago / tau_hours)
+
+
+def muscle_group_fatigue(db: Database) -> str:
+    """
+    Estimate residual fatigue per muscle group from last 7 days of workouts.
+    Assumes τ=48h exponential decay.
+    """
+    from datetime import datetime
+
+    activities = db.get_recent_activities(days=7)
+    now = datetime.now()
+    residual: dict[str, float] = {}
+
+    for a in activities:
+        type_ = (a.get("type") or "").lower()
+        load = a.get("training_load") or 0
+        if load == 0:
+            continue
+
+        st = a.get("start_time")
+        if not st:
+            continue
+        try:
+            dt = datetime.fromisoformat(st.replace("Z", "").split("+")[0])
+        except (ValueError, TypeError):
+            try:
+                dt = datetime.strptime(st[:19], "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                continue
+        hours_ago = (now - dt).total_seconds() / 3600
+        decayed = _decay(load, hours_ago)
+        if decayed < 1:
+            continue
+
+        # Distribute load to muscle groups
+        group_map = _MUSCLE_MAP_BY_TYPE.get(type_)
+        if type_ in ("strength", "strength_training", "gym"):
+            # Try to resolve from gym_sets
+            try:
+                sets = db.get_gym_sets(a["id"]) if hasattr(db, "get_gym_sets") else []
+            except Exception:
+                sets = []
+            if sets:
+                for s in sets:
+                    ex = (s.get("exercise") or "").lower().replace(" ", "_").replace("-", "_")
+                    ex_map = None
+                    for key, m in _MUSCLE_MAP_BY_EXERCISE.items():
+                        if key in ex:
+                            ex_map = m
+                            break
+                    if ex_map:
+                        weight = 1.0 / len(sets)  # split load evenly across sets
+                        for mg, pct in ex_map.items():
+                            residual[mg] = residual.get(mg, 0) + decayed * weight * pct
+                continue
+            group_map = {"full_body": 1.0}
+
+        if not group_map:
+            continue
+        for mg, pct in group_map.items():
+            residual[mg] = residual.get(mg, 0) + decayed * pct
+
+    if not residual:
+        return "## Muscle Group Fatigue (computed, 48h decay)\nNo recent workouts to analyze."
+
+    lines = ["## Muscle Group Fatigue (computed, 48h exponential decay)"]
+    # Sort by fatigue descending
+    sorted_groups = sorted(residual.items(), key=lambda x: -x[1])
+    for mg, val in sorted_groups:
+        state = "FRESH" if val < 20 else "MODERATE" if val < 50 else "FATIGUED" if val < 100 else "OVERLOADED"
+        bar = "█" * min(20, int(val / 10))
+        lines.append(f"  {mg:18s} {val:5.0f} {bar} {state}")
+
+    # Readiness hints
+    fresh_groups = [g for g, v in sorted_groups if v < 20]
+    fatigued_groups = [g for g, v in sorted_groups if v >= 50]
+    if fresh_groups:
+        lines.append(f"\n  ✓ Ready to train: {', '.join(fresh_groups)}")
+    if fatigued_groups:
+        lines.append(f"  ⚠️  Needs recovery: {', '.join(fatigued_groups)}")
+
+    return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────────────────────
+# TRAINING INTENSITY TREND (week-over-week)
+# ─────────────────────────────────────────────────────────────
+
+def training_intensity_trend(db: Database) -> str:
+    """Compare this week's training intensity distribution to last week and 4-week baseline."""
+    from datetime import datetime
+
+    all_28 = db.get_recent_activities(days=28)
+    if not all_28:
+        return "## Training Intensity Trend (computed)\nNo data."
+
+    today = date.today()
+    week_start = today - timedelta(days=today.weekday())
+    last_week_start = week_start - timedelta(days=7)
+
+    this_week = [a for a in all_28 if date.fromisoformat(a["date"]) >= week_start]
+    last_week = [a for a in all_28 if last_week_start <= date.fromisoformat(a["date"]) < week_start]
+    last_4w = all_28
+
+    def stats(acts):
+        if not acts:
+            return None
+        loads = [a.get("training_load") or 0 for a in acts]
+        hard_time = sum((a.get("hr_zone4_sec") or 0) + (a.get("hr_zone5_sec") or 0) for a in acts) / 60
+        easy_time = sum((a.get("hr_zone1_sec") or 0) + (a.get("hr_zone2_sec") or 0) for a in acts) / 60
+        intents = []
+        for a in acts:
+            intent, _ = _session_intent(a)
+            intents.append(intent)
+        from collections import Counter
+        return {
+            "count": len(acts),
+            "total_load": sum(loads),
+            "avg_load": sum(loads) / len(loads) if loads else 0,
+            "hard_min": hard_time,
+            "easy_min": easy_time,
+            "intents": Counter(intents),
+        }
+
+    tw = stats(this_week)
+    lw = stats(last_week)
+    m4 = stats(last_4w)
+
+    lines = ["## Training Intensity Trend (computed)"]
+
+    if tw:
+        intents_str = ", ".join(f"{n}×{k}" for k, n in tw["intents"].most_common())
+        lines.append(f"This week:  {tw['count']} sessions | total load {tw['total_load']:.0f} | avg {tw['avg_load']:.0f}")
+        lines.append(f"            hard (Z4+Z5): {tw['hard_min']:.0f}min | easy (Z1+Z2): {tw['easy_min']:.0f}min")
+        lines.append(f"            intents: {intents_str}")
+
+    if lw:
+        lines.append(f"Last week:  {lw['count']} sessions | total load {lw['total_load']:.0f} | avg {lw['avg_load']:.0f}")
+
+    if m4 and m4["count"] > 0:
+        baseline_avg = m4["total_load"] / 4  # per week
+        lines.append(f"4-wk avg:   {baseline_avg:.0f} load/week | {m4['count']/4:.1f} sessions/week")
+
+    # Trend call
+    if tw and lw:
+        load_delta = tw["total_load"] - lw["total_load"]
+        count_delta = tw["count"] - lw["count"]
+        pct = (load_delta / lw["total_load"] * 100) if lw["total_load"] > 0 else 0
+        if abs(pct) > 25:
+            direction = "📈 RISING" if load_delta > 0 else "📉 FALLING"
+            lines.append(f"  {direction}: total load {pct:+.0f}% vs last week ({count_delta:+d} sessions)")
+        else:
+            lines.append(f"  Stable: total load {pct:+.0f}% vs last week")
+
+    # Intensity balance hint
+    if tw and tw["hard_min"] > 0:
+        pct_hard = tw["hard_min"] / (tw["hard_min"] + tw["easy_min"]) * 100 if (tw["hard_min"] + tw["easy_min"]) > 0 else 0
+        if pct_hard > 30:
+            lines.append(f"  ⚠️  {pct_hard:.0f}% time in hard zones — may need more easy/aerobic base")
+        elif pct_hard < 10:
+            lines.append(f"  Heavy on easy — fine unless targeting performance peak")
+
+    return "\n".join(lines)
