@@ -458,11 +458,15 @@ def _format_metrics(metrics: dict[str, Any] | None) -> str:
     if metrics is None:
         return "No data available"
 
+    sleep_start = metrics.get('sleep_start') or metrics.get('sleep_start_time') or ''
+    sleep_end = metrics.get('sleep_end') or metrics.get('sleep_end_time') or ''
+    sleep_times = f" ({sleep_start}–{sleep_end})" if sleep_start and sleep_end else ""
+
     lines = [
         f"Date: {metrics.get('date', 'N/A')}",
         f"HRV (last night): {metrics.get('hrv_last_night', 'N/A')} ms",
         f"HRV (weekly avg): {metrics.get('hrv_weekly_avg', 'N/A')} ms",
-        f"Sleep: {_format_sleep_duration(metrics.get('sleep_duration_min'))}",
+        f"Sleep: {_format_sleep_duration(metrics.get('sleep_duration_min'))}{sleep_times}",
         f"Sleep Score: {metrics.get('sleep_score', 'N/A')}/100",
         f"Body Battery (AM): {metrics.get('body_battery_am', 'N/A')}/100",
         f"Stress (avg): {metrics.get('stress_avg', 'N/A')}",

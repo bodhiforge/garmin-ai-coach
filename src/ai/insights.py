@@ -751,15 +751,16 @@ def weekly_gap_analysis(db) -> str:
     return "\n".join(lines)
 
 
-def daily_summary(db: Database) -> str:
+def daily_summary(db: Database, metrics: dict | None = None) -> str:
     parts = [
+        decision_logic(db, metrics) if metrics else None,
         readiness_attribution(db),
         recovery_insights(db),
         sleep_quality_insights(db),
         bb_dynamics_insights(db),
         load_with_corrections(db),
         training_accountability(db),
-        recent_activity_detail(db, hours=48),
+        recent_activity_detail(db, hours=72),
         muscle_group_fatigue(db),
         training_intensity_trend(db),
         weekly_gap_analysis(db),
@@ -771,13 +772,14 @@ def daily_summary(db: Database) -> str:
         types = [a["type"] for a in activities]
         parts.append(f"Last 7 days: {len(activities)} activities ({', '.join(set(types))})")
 
-    ski_briefing = pre_ski_briefing(db)
-    if ski_briefing:
-        parts.append(ski_briefing)
+    # ski_briefing = pre_ski_briefing(db)  # paused post-season
+    # if ski_briefing:
+    #     parts.append(ski_briefing)
 
-    ski = db.get_recent_activities(days=30, activity_type="skiing")
-    if ski:
-        parts.append(ski_insights(db))
+    # Ski season paused 2026-04-13 (ended 4/12). Re-enable next Nov.
+    # ski = db.get_recent_activities(days=30, activity_type="skiing")
+    # if ski:
+    #     parts.append(ski_insights(db))
 
     gym = db.get_recent_activities(days=30, activity_type="strength")
     if gym:
@@ -1162,5 +1164,162 @@ def training_intensity_trend(db: Database) -> str:
             lines.append(f"  ⚠️  {pct_hard:.0f}% time in hard zones — may need more easy/aerobic base")
         elif pct_hard < 10:
             lines.append(f"  Heavy on easy — fine unless targeting performance peak")
+
+    return "\n".join(lines)
+"""
+Decision logic — appended to src/ai/insights.py.
+Reuses _MUSCLE_MAP_BY_TYPE, _MUSCLE_MAP_BY_EXERCISE, _decay already defined above.
+"""
+
+
+def _compute_muscle_group_fatigue(db: Database) -> dict[str, float]:
+    """Return {muscle_group: residual_load} dict. Same math as muscle_group_fatigue()."""
+    from datetime import datetime
+
+    activities = db.get_recent_activities(days=7)
+    now = datetime.now()
+    residual: dict[str, float] = {}
+
+    for a in activities:
+        type_ = (a.get("type") or "").lower()
+        load = a.get("training_load") or 0
+        if load == 0:
+            continue
+        st = a.get("start_time")
+        if not st:
+            continue
+        try:
+            dt = datetime.fromisoformat(st.replace("Z", "").split("+")[0])
+        except (ValueError, TypeError):
+            try:
+                dt = datetime.strptime(st[:19], "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                continue
+        hours_ago = (now - dt).total_seconds() / 3600
+        decayed = _decay(load, hours_ago)
+        if decayed < 1:
+            continue
+
+        group_map = _MUSCLE_MAP_BY_TYPE.get(type_)
+        if type_ in ("strength", "strength_training", "gym"):
+            try:
+                sets = db.get_gym_sets(a["id"]) if hasattr(db, "get_gym_sets") else []
+            except Exception:
+                sets = []
+            if sets:
+                for s in sets:
+                    ex = (s.get("exercise") or "").lower().replace(" ", "_").replace("-", "_")
+                    ex_map = None
+                    for key, m in _MUSCLE_MAP_BY_EXERCISE.items():
+                        if key in ex:
+                            ex_map = m
+                            break
+                    if ex_map:
+                        weight = 1.0 / len(sets)
+                        for mg, pct in ex_map.items():
+                            residual[mg] = residual.get(mg, 0) + decayed * weight * pct
+                continue
+            group_map = {"full_body": 1.0}
+
+        if not group_map:
+            continue
+        for mg, pct in group_map.items():
+            residual[mg] = residual.get(mg, 0) + decayed * pct
+
+    return residual
+
+
+def _hrv_rising_streak(db: Database) -> int:
+    """Count consecutive days HRV has been increasing (oldest-to-newest interpretation).
+       Returns N where hrv[today] > hrv[today-1] > ... > hrv[today-N]."""
+    with db._connection() as conn:
+        rows = conn.execute(
+            """SELECT date, hrv_last_night FROM daily_metrics
+               WHERE date >= date('now', '-7 days') AND hrv_last_night IS NOT NULL
+               ORDER BY date DESC"""
+        ).fetchall()
+    hrvs = [r["hrv_last_night"] for r in rows]
+    streak = 0
+    for i in range(len(hrvs) - 1):
+        if hrvs[i] > hrvs[i + 1]:
+            streak += 1
+        else:
+            break
+    return streak
+
+
+def decision_logic(db: Database, metrics: dict) -> str:
+    """
+    Pre-computed decision: tells LLM which output format to use and what data to plug in.
+    LLM reads this section and follows it — no need for it to infer format.
+    """
+    fatigue = _compute_muscle_group_fatigue(db)
+    fresh_groups = sorted([g for g, v in fatigue.items() if v < 20])
+    fatigued_groups = sorted([g for g, v in fatigue.items() if v >= 50])
+    all_fatigued = bool(fatigue) and not any(v < 30 for v in fatigue.values())
+
+    hrv = metrics.get("hrv_last_night") or 0
+    hrv_baseline = metrics.get("hrv_weekly_avg") or hrv
+    hrv_delta_pct = ((hrv - hrv_baseline) / hrv_baseline * 100) if hrv_baseline > 0 else 0
+    hrv_rising = _hrv_rising_streak(db)
+
+    sleep_min = metrics.get("sleep_duration_min") or 0
+    sleep_h = sleep_min / 60 if sleep_min else 0
+    stress = metrics.get("stress_avg") or 0
+    bb_wake = metrics.get("bb_at_wake") or metrics.get("body_battery_am") or 0
+    acwr = metrics.get("acwr_ratio") or 0
+
+    decision = None
+    reason = []
+
+    if sleep_h > 0 and sleep_h < 4:
+        decision = "SINGLE_REST"
+        reason.append(f"sleep {sleep_h:.1f}h < 4h (hard threshold)")
+    elif stress > 80:
+        decision = "SINGLE_REST"
+        reason.append(f"stress_avg {stress} > 80")
+    elif bb_wake > 0 and bb_wake < 20:
+        decision = "SINGLE_REST"
+        reason.append(f"BB at-wake {bb_wake} < 20")
+    elif all_fatigued:
+        decision = "SINGLE_REST"
+        reason.append("all muscle groups FATIGUED/MODERATE — nothing fresh")
+    elif hrv_delta_pct < -15:
+        decision = "SINGLE_REST"
+        reason.append(f"HRV {hrv_delta_pct:+.0f}% vs baseline (deep CNS hit)")
+    elif hrv_delta_pct >= 15 and hrv_rising >= 2 and fresh_groups:
+        decision = "TWO_OPTION"
+        reason.append(f"HRV {hrv_delta_pct:+.0f}% rising {hrv_rising}d — CNS rebound")
+        reason.append(f"fresh groups available: {', '.join(fresh_groups)}")
+    elif fresh_groups:
+        decision = "SINGLE_LIGHT"
+        reason.append(f"fresh groups: {', '.join(fresh_groups)}")
+        reason.append(f"HRV {hrv_delta_pct:+.0f}% (neutral, not rebounding)")
+    else:
+        decision = "SINGLE_REST"
+        reason.append("no fresh groups + HRV not rebounding")
+
+    lines = [
+        "## Today's Decision (computed — LLM MUST follow this)",
+        f"DECISION: {decision}",
+        f"  Reason: {'; '.join(reason)}",
+    ]
+
+    if decision == "TWO_OPTION":
+        lines.append(f"  Fresh groups (target for Option A): {', '.join(fresh_groups)}")
+        lines.append(f"  Fatigued groups (AVOID): {', '.join(fatigued_groups) or 'none'}")
+        lines.append(f"  Suggested volume cap: 25-35 min, RPE 5-6, 2 sets per exercise")
+    elif decision == "SINGLE_LIGHT":
+        lines.append(f"  Target muscle groups: {', '.join(fresh_groups)}")
+        lines.append(f"  Avoid: {', '.join(fatigued_groups) or 'none'}")
+        lines.append(f"  Suggested volume cap: 30-40 min, RPE 6-7")
+    else:
+        lines.append(f"  Output a single recovery/rest recommendation (swim/walk/mobility).")
+        lines.append(f"  Do NOT recommend strength work.")
+
+    lines.append(
+        f"\n  Signals used: HRV {hrv} (baseline {hrv_baseline}, {hrv_delta_pct:+.0f}%, rising {hrv_rising}d), "
+        f"sleep {sleep_h:.1f}h, BB-wake {bb_wake}, ACWR {acwr}, stress {stress}"
+    )
 
     return "\n".join(lines)

@@ -82,7 +82,7 @@ def _write_training_digest(config, sync, coach, metrics) -> None:
         yesterday = date.today() - timedelta(days=1)
         metrics = sync.client.get_daily_metrics(yesterday)
 
-    computed = daily_summary(coach.db)
+    computed = daily_summary(coach.db, metrics)
 
     from .ai.coach import _format_metrics
     raw_metrics = _format_metrics(metrics)
