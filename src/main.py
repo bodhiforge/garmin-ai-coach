@@ -120,10 +120,18 @@ def _trigger_riko_analysis() -> bool:
     import shutil
     import subprocess
     neve_cron_id = "1917f562-a656-4cd8-9319-7c442687299d"
-    openclaw_bin = shutil.which("openclaw") or "/opt/homebrew/bin/openclaw"
+    cron_path = os.pathsep.join([
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+        os.environ.get("PATH", ""),
+    ])
+    openclaw_bin = shutil.which("openclaw", path=cron_path) or "/opt/homebrew/bin/openclaw"
     try:
         result = subprocess.run(
             [openclaw_bin, "cron", "run", neve_cron_id],
+            env={**os.environ, "PATH": cron_path},
             capture_output=True, text=True, timeout=30,
         )
         if result.returncode == 0:
@@ -188,6 +196,7 @@ def cmd_sync(args: argparse.Namespace) -> None:
         print("Wake-up detected — writing data and triggering Riko...")
         _write_neve_data(metrics)
         _write_training_digest(config, sync, coach, metrics)
+        report_path.unlink(missing_ok=True)
         flag_triggered.touch()
         _trigger_riko_analysis()
         return
