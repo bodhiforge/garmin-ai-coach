@@ -18,10 +18,12 @@ from ..garmin.sync import GarminSync
 logger = logging.getLogger(__name__)
 
 MAX_TELEGRAM_LENGTH = 4000
-RIKO_FRONT_DOOR_MESSAGE = (
-    "Neve is now data-only for Garmin and training metrics.\n"
+GARMIN_BACKEND_FRONT_DOOR_MESSAGE = (
+    "Garmin backend is now data-only for training metrics.\n"
     "Please talk to Riko for coaching, training questions, and daily push follow-up."
 )
+TELEGRAM_SEND_ENABLED_ENV = "GARMIN_TELEGRAM_SEND_ENABLED"
+LEGACY_TELEGRAM_SEND_ENABLED_ENV = "NEVE_TELEGRAM_SEND_ENABLED"
 
 
 def _split_message(text: str, limit: int = MAX_TELEGRAM_LENGTH) -> list[str]:
@@ -71,7 +73,7 @@ class CoachBot:
     ) -> None:
         if not self._is_authorized(update):
             return
-        await update.message.reply_text(RIKO_FRONT_DOOR_MESSAGE)
+        await update.message.reply_text(GARMIN_BACKEND_FRONT_DOOR_MESSAGE)
 
     async def _handle_message(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -79,13 +81,17 @@ class CoachBot:
         if not self._is_authorized(update):
             return
 
-        await update.message.reply_text(RIKO_FRONT_DOOR_MESSAGE)
+        await update.message.reply_text(GARMIN_BACKEND_FRONT_DOOR_MESSAGE)
 
 
     async def send_message(self, text: str) -> None:
-        if os.environ.get("NEVE_TELEGRAM_SEND_ENABLED") != "1":
+        send_enabled = (
+            os.environ.get(TELEGRAM_SEND_ENABLED_ENV) == "1"
+            or os.environ.get(LEGACY_TELEGRAM_SEND_ENABLED_ENV) == "1"
+        )
+        if not send_enabled:
             logger.info(
-                "Neve Telegram send suppressed because Riko owns delivery (%s chars).",
+                "Garmin backend Telegram send suppressed because Riko owns delivery (%s chars).",
                 len(text),
             )
             return

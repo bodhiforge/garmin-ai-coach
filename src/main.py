@@ -96,8 +96,8 @@ def _write_training_digest(config, sync, coach, metrics) -> None:
     digest_path.parent.mkdir(parents=True, exist_ok=True)
 
     digest = f"""# Training Digest — {date.today()} ({date.today().strftime('%A')})
-# Generated: {date.today().isoformat()} by Neve (pure data, no LLM)
-# Consumed by: Riko OpenClaw morning cron → Opus → Telegram
+# Generated: {date.today().isoformat()} by Garmin backend (pure data, no LLM)
+# Consumed by: Riko OpenClaw training cron → Telegram
 
 ## Raw Metrics
 {raw_metrics}
@@ -146,11 +146,29 @@ def _trigger_riko_analysis() -> bool:
     return False
 
 
-def _write_neve_data(metrics: dict) -> None:
+def _copy_legacy_flag_timestamp(legacy_path: Path, current_path: Path) -> None:
+    """Create a renamed flag with the legacy flag's timestamp."""
+    current_path.touch()
+    legacy_stat = legacy_path.stat()
+    os.utime(current_path, (legacy_stat.st_atime, legacy_stat.st_mtime))
+
+
+def _migrate_legacy_training_flags(flag_dir: Path, today: str) -> None:
+    """Keep today's legacy flags from causing duplicate pushes."""
+    mappings = [
+        (flag_dir / f"neve-pushed-{today}", flag_dir / f"training-pushed-{today}"),
+        (flag_dir / f"neve-triggered-{today}", flag_dir / f"training-triggered-{today}"),
+    ]
+    for legacy_path, current_path in mappings:
+        if legacy_path.exists() and not current_path.exists():
+            _copy_legacy_flag_timestamp(legacy_path, current_path)
+
+
+def _write_training_data(metrics: dict) -> None:
     """Write today's wakeup metrics for Riko to read."""
     import json
     from datetime import date
-    data_path = Path.home() / "ai" / "data" / "neve-today.json"
+    data_path = Path.home() / "ai" / "data" / "training-today.json"
     data = {
         "date": str(date.today()),
         "sleep_end": metrics.get("sleep_end", ""),
@@ -184,8 +202,9 @@ def cmd_sync(args: argparse.Namespace) -> None:
     # --- Morning push state machine ---
     today = str(date.today())
     flag_dir = Path.home() / "ai" / "data"
-    flag_sent = flag_dir / f"neve-pushed-{today}"
-    flag_triggered = flag_dir / f"neve-triggered-{today}"
+    _migrate_legacy_training_flags(flag_dir, today)
+    flag_sent = flag_dir / f"training-pushed-{today}"
+    flag_triggered = flag_dir / f"training-triggered-{today}"
     report_path = flag_dir / "signals" / "morning-report.txt"
 
     # Already sent today? Done.
@@ -197,7 +216,7 @@ def cmd_sync(args: argparse.Namespace) -> None:
     # even if the initial trigger fails (e.g., node missing from cron PATH).
     if not flag_triggered.exists() and getattr(sync, '_last_wake_detected', False):
         print("Wake-up detected — writing data and triggering Riko...")
-        _write_neve_data(metrics)
+        _write_training_data(metrics)
         _write_training_digest(config, sync, coach, metrics)
         report_path.unlink(missing_ok=True)
         flag_triggered.touch()
@@ -217,12 +236,12 @@ def cmd_sync(args: argparse.Namespace) -> None:
                     flag_sent.touch()
                     print(f"Morning push delivered by Riko; marked sent ({len(report)} chars)")
                     # Cleanup old flags
-                    for f in flag_dir.glob("neve-pushed-*"):
+                    for f in flag_dir.glob("training-pushed-*"):
                         if f.name != flag_sent.name:
-                            age = (date.today() - date.fromisoformat(f.name.replace("neve-pushed-", ""))).days
+                            age = (date.today() - date.fromisoformat(f.name.replace("training-pushed-", ""))).days
                             if age > 7:
                                 f.unlink(missing_ok=True)
-                    for f in flag_dir.glob("neve-triggered-*"):
+                    for f in flag_dir.glob("training-triggered-*"):
                         if f.name != flag_triggered.name:
                             f.unlink(missing_ok=True)
                 except Exception as e:
@@ -241,7 +260,7 @@ def cmd_sync(args: argparse.Namespace) -> None:
 
 def cmd_morning(args: argparse.Namespace) -> None:
     """Sync data + write training digest to file. No LLM call.
-    The digest is consumed by Riko's OpenClaw cron which uses Opus."""
+    The digest is consumed by Riko's OpenClaw training cron."""
     config, _, _, sync, coach, bot = build_components(args.config)
 
     metrics = sync.sync_daily_metrics()
@@ -519,7 +538,7 @@ def main() -> None:
     concern_parser.add_argument("text", nargs="?", default="", help="Concern text (for add)")
     concern_parser.add_argument("--impact", help="Impact description")
     concern_parser.add_argument("--sport", help="Affected sport")
-    concern_parser.add_argument("--source", default="user", help="Source (user/riko/neve)")
+    concern_parser.add_argument("--source", default="user", help="Source (user/riko/garmin-backend)")
     concern_parser.add_argument("--concern-id", help="Concern ID (for resolve)")
 
     # push-workout — upload workout plan to Garmin
