@@ -119,7 +119,10 @@ def _trigger_riko_analysis() -> bool:
     """Trigger Riko (OpenClaw) to generate morning report. Returns True if triggered."""
     import shutil
     import subprocess
-    neve_cron_id = "1917f562-a656-4cd8-9319-7c442687299d"
+    riko_cron_id = os.environ.get(
+        "RIKO_TRAINING_PUSH_CRON_ID",
+        "bff6527a-9d3c-4b1b-acac-8f06a63fa1dc",
+    )
     cron_path = os.pathsep.join([
         "/opt/homebrew/bin",
         "/usr/local/bin",
@@ -130,12 +133,12 @@ def _trigger_riko_analysis() -> bool:
     openclaw_bin = shutil.which("openclaw", path=cron_path) or "/opt/homebrew/bin/openclaw"
     try:
         result = subprocess.run(
-            [openclaw_bin, "cron", "run", neve_cron_id],
+            [openclaw_bin, "cron", "run", riko_cron_id],
             env={**os.environ, "PATH": cron_path},
             capture_output=True, text=True, timeout=30,
         )
         if result.returncode == 0:
-            print(f"Riko analysis triggered (cron {neve_cron_id})")
+            print(f"Riko training push triggered (cron {riko_cron_id})")
             return True
         print(f"WARNING: Riko trigger failed: {result.stderr[:200]}")
     except Exception as e:
@@ -167,9 +170,9 @@ def _write_neve_data(metrics: dict) -> None:
 
 
 def cmd_sync(args: argparse.Namespace) -> None:
-    """Sync Garmin data. Manages morning push: detect wake -> trigger Riko -> send via Neve."""
+    """Sync Garmin data. Manages morning push: detect wake -> trigger Riko -> mark delivery."""
     from datetime import date
-    config, _, _, sync, coach, bot = build_components(args.config)
+    config, _, _, sync, coach, _bot = build_components(args.config)
 
     metrics = sync.sync_daily_metrics()
     print(f"Daily metrics synced: HRV={metrics.get('hrv_last_night')}ms, "
@@ -201,7 +204,7 @@ def cmd_sync(args: argparse.Namespace) -> None:
         _trigger_riko_analysis()
         return
 
-    # Phase 2: Report ready -> send via Neve bot
+    # Phase 2: Report ready -> Riko already delivered it; mark local state.
     if flag_triggered.exists() and report_path.exists():
         import os
         report_mtime = os.path.getmtime(report_path)
@@ -211,9 +214,8 @@ def cmd_sync(args: argparse.Namespace) -> None:
             report = report_path.read_text().strip()
             if report:
                 try:
-                    asyncio.run(bot.send_message(report))
                     flag_sent.touch()
-                    print(f"Morning push sent via Neve ({len(report)} chars)")
+                    print(f"Morning push delivered by Riko; marked sent ({len(report)} chars)")
                     # Cleanup old flags
                     for f in flag_dir.glob("neve-pushed-*"):
                         if f.name != flag_sent.name:
@@ -224,7 +226,7 @@ def cmd_sync(args: argparse.Namespace) -> None:
                         if f.name != flag_triggered.name:
                             f.unlink(missing_ok=True)
                 except Exception as e:
-                    print(f"ERROR: Neve send failed: {e} — will retry next sync")
+                    print(f"ERROR: Riko delivery bookkeeping failed: {e} — will retry next sync")
             return
 
     # Phase 3: Triggered but no report yet -> retry trigger if stale

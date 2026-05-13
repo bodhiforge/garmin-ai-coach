@@ -14,11 +14,14 @@ from telegram.ext import (
 
 from ..ai.coach import AICoach
 from ..garmin.sync import GarminSync
-from .agent import coach_agent, CoachDeps, get_conversation, save_conversation, MAX_HISTORY
 
 logger = logging.getLogger(__name__)
 
 MAX_TELEGRAM_LENGTH = 4000
+RIKO_FRONT_DOOR_MESSAGE = (
+    "Neve is now data-only for Garmin and training metrics.\n"
+    "Please talk to Riko for coaching, training questions, and daily push follow-up."
+)
 
 
 def _split_message(text: str, limit: int = MAX_TELEGRAM_LENGTH) -> list[str]:
@@ -50,7 +53,6 @@ class CoachBot:
         self.chat_id = chat_id
         self.coach = coach
         self.sync = sync
-        self.deps = CoachDeps(coach=coach, sync=sync)
         self.app = Application.builder().token(bot_token).build()
         os.environ.setdefault("OPENAI_API_KEY", coach.client.api_key)
         self._register_handlers()
@@ -69,16 +71,7 @@ class CoachBot:
     ) -> None:
         if not self._is_authorized(update):
             return
-        await update.message.reply_text(
-            "Garmin AI Coach\n\n"
-            "Just talk to me naturally:\n"
-            '- "What should I train today?"\n'
-            '- "Push a pull day to my watch"\n'
-            '- "Bump bench to 45kg"\n'
-            '- "How\'s my recovery?"\n'
-            '- "I switched to Anytime Fitness"\n'
-            '- "What was my last leg workout?"'
-        )
+        await update.message.reply_text(RIKO_FRONT_DOOR_MESSAGE)
 
     async def _handle_message(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -86,41 +79,16 @@ class CoachBot:
         if not self._is_authorized(update):
             return
 
-        await update.message.chat.send_action("typing")
-        user_text = update.message.text
-        chat_id = str(update.effective_chat.id)
-        conv = get_conversation(chat_id, db=self.sync.db)
-
-        logger.info("Message: %s", user_text[:80])
-
-        try:
-
-            result = await coach_agent.run(
-                user_text,
-                deps=self.deps,
-                message_history=conv.history,
-            )
-
-            # Update and persist conversation history
-            conv.history = result.all_messages()[-MAX_HISTORY:]
-            save_conversation(chat_id, conv.history, self.sync.db)
-
-            response = result.output
-
-            if len(response) > 4000:
-                for chunk in _split_message(response):
-                    await update.message.reply_text(chunk)
-            else:
-                await update.message.reply_text(response)
-
-        except Exception as e:
-            logger.error("Agent failed: %s", e, exc_info=True)
-            await update.message.reply_text(
-                "Something went wrong. Try again in a moment."
-            )
+        await update.message.reply_text(RIKO_FRONT_DOOR_MESSAGE)
 
 
     async def send_message(self, text: str) -> None:
+        if os.environ.get("NEVE_TELEGRAM_SEND_ENABLED") != "1":
+            logger.info(
+                "Neve Telegram send suppressed because Riko owns delivery (%s chars).",
+                len(text),
+            )
+            return
         bot = self.app.bot
         if len(text) > 4000:
             for chunk in _split_message(text):
