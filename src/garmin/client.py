@@ -10,6 +10,12 @@ from typing import Any
 from garminconnect import Garmin
 
 logger = logging.getLogger(__name__)
+MENSTRUAL_PHASES = {
+    1: "period",
+    2: "follicular",
+    3: "ovulation",
+    4: "luteal",
+}
 
 GARTH_HOME = Path.home() / ".garth"
 
@@ -229,15 +235,21 @@ class GarminClient:
             data = self.client.get_menstrual_data_for_date(target_date.isoformat())
             if not data:
                 return None
-            cycle_info = data.get("cycleInfo", data)
+            cycle_info = data.get("daySummary") or data.get("cycleInfo", data)
             if isinstance(cycle_info, list) and cycle_info:
                 cycle_info = cycle_info[0]
             if not isinstance(cycle_info, dict):
                 return None
+            phase = cycle_info.get("currentPhase") or cycle_info.get("phase")
+            if isinstance(phase, int):
+                phase = MENSTRUAL_PHASES.get(phase, str(phase))
             return {
-                "phase": cycle_info.get("currentPhase") or cycle_info.get("phase"),
-                "day_of_cycle": cycle_info.get("dayOfCycle"),
-                "cycle_length": cycle_info.get("cycleLength"),
+                "phase": phase,
+                "day_of_cycle": cycle_info.get("dayOfCycle") or cycle_info.get("dayInCycle"),
+                "cycle_length": (
+                    cycle_info.get("cycleLength")
+                    or cycle_info.get("predictedCycleLength")
+                ),
             }
         except Exception as e:
             logger.debug("Menstrual data not available: %s", e)

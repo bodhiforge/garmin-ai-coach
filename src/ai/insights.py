@@ -8,6 +8,9 @@ from typing import Any
 from ..db.models import Database
 
 
+PERIOD_PHASES = {"period", "menstrual", "menstruation", "menses", "1"}
+
+
 def ski_insights(db: Database) -> str:
     activities = db.get_recent_activities(days=365, activity_type="skiing")
     if not activities:
@@ -623,6 +626,7 @@ def load_with_corrections(db) -> str:
     acwr = today.get("acwr_ratio") or 0
     status = today.get("training_status") or "?"
     balance = today.get("load_balance") or "?"
+    period_active = _is_period_active(today)
 
     lines = ["## Training Load (computed, basketball-corrected)"]
     lines.append(f"Acute: {acute:.0f} | Chronic: {chronic:.0f} | ACWR: {acwr:.2f} | Status: {status}")
@@ -641,9 +645,52 @@ def load_with_corrections(db) -> str:
 
     # Load balance interpretation
     if balance and "SHORTAGE" in str(balance):
-        lines.append(f"  ⚠️ {balance} — add more aerobic work (swim, easy run, cycling)")
+        if period_active:
+            lines.append(
+                f"  ⚠️ {balance} — aerobic work is behind, but period is active: "
+                "defer swim; use walk, mobility, or easy bike instead"
+            )
+        else:
+            lines.append(f"  ⚠️ {balance} — add more aerobic work (swim, easy run, cycling)")
 
     return "\n".join(lines)
+
+
+def _normalize_menstrual_phase(phase: object) -> str:
+    if phase is None:
+        return ""
+    value = str(phase).strip().lower().replace("_", " ")
+    return {
+        "1": "period",
+        "2": "follicular",
+        "3": "ovulation",
+        "4": "luteal",
+    }.get(value, value)
+
+
+def _is_period_active(metrics: dict | None) -> bool:
+    if metrics is None:
+        return False
+    return _normalize_menstrual_phase(metrics.get("menstrual_phase")) in PERIOD_PHASES
+
+
+def menstrual_constraint(db: Database, metrics: dict | None = None) -> str:
+    """Surface period as a hard training constraint, not generic context."""
+    current_metrics = metrics
+    if current_metrics is None:
+        recent = db.get_recent_metrics(days=1)
+        current_metrics = recent[0] if recent else None
+    if not _is_period_active(current_metrics):
+        return ""
+
+    day = current_metrics.get("menstrual_day_of_cycle")
+    day_text = f"cycle day {day}" if day is not None else "cycle day unknown"
+    return "\n".join([
+        "## Menstrual Constraint (computed — LLM MUST follow)",
+        f"Period active ({day_text}).",
+        "Hard constraint: do NOT recommend swimming today.",
+        "If aerobic/base work is needed, substitute walk, mobility, easy bike, or gentle gym; keep it comfort-based.",
+    ])
 
 
 def concerns_summary(db) -> str:
@@ -675,6 +722,8 @@ def weekly_gap_analysis(db) -> str:
 
     activities = db.get_recent_activities(days=7)
     this_week = [a for a in activities if date.fromisoformat(a["date"]) >= week_start]
+    metrics = db.get_recent_metrics(days=1)
+    period_active = _is_period_active(metrics[0] if metrics else None)
 
     types_done = [a["type"] for a in this_week]
     dates_done = [a["date"] for a in this_week]
@@ -702,12 +751,17 @@ def weekly_gap_analysis(db) -> str:
         needed = 2 - gym_count
         missing.append(f"Gym: need {needed} more (target 2x/week for body recomp)")
     if swim_count < 1:
-        missing.append("Swim: need 1 (Costa Rica freestyle prep — 9 weeks out)")
+        if period_active:
+            missing.append("Swim: deferred while period is active; use walk/mobility/easy bike for aerobic base")
+        else:
+            missing.append("Swim: need 1 (Costa Rica freestyle prep — 9 weeks out)")
 
     if missing:
         lines.append("Missing this week:")
         for m in missing:
             lines.append(f"  - {m}")
+        if period_active:
+            lines.append("Period constraint: no swim slots suggested until period ends.")
 
         # Suggest when to fit them
         # Basketball: Wed/Fri evening → morning is free for gym/swim
@@ -728,16 +782,16 @@ def weekly_gap_analysis(db) -> str:
             if check_dow in (2, 4):  # Wed/Fri — basketball evening
                 if gym_count < 2:
                     suggestions.append(f"{dow_names[check_dow]} {check_date}: morning gym (basketball is evening)")
-                elif swim_count < 1:
+                elif swim_count < 1 and not period_active:
                     suggestions.append(f"{dow_names[check_dow]} {check_date}: morning swim (basketball is evening)")
             elif check_dow == 6:  # Sunday — rest preferred
-                if swim_count < 1:
+                if swim_count < 1 and not period_active:
                     suggestions.append(f"Sun {check_date}: light swim (active recovery)")
             else:  # Mon/Tue/Thu/Sat — open
                 if gym_count < 2:
                     suggestions.append(f"{dow_names[check_dow]} {check_date}: gym")
                     gym_count += 1
-                elif swim_count < 1:
+                elif swim_count < 1 and not period_active:
                     suggestions.append(f"{dow_names[check_dow]} {check_date}: swim")
                     swim_count += 1
 
@@ -754,6 +808,7 @@ def weekly_gap_analysis(db) -> str:
 def daily_summary(db: Database, metrics: dict | None = None) -> str:
     parts = [
         decision_logic(db, metrics) if metrics else None,
+        menstrual_constraint(db, metrics),
         readiness_attribution(db),
         recovery_insights(db),
         sleep_quality_insights(db),
@@ -1268,6 +1323,8 @@ def decision_logic(db: Database, metrics: dict) -> str:
     stress = metrics.get("stress_avg") or 0
     bb_wake = metrics.get("bb_at_wake") or metrics.get("body_battery_am") or 0
     acwr = metrics.get("acwr_ratio") or 0
+    period_active = _is_period_active(metrics)
+    period_day = metrics.get("menstrual_day_of_cycle")
 
     decision = None
     reason = []
@@ -1314,8 +1371,15 @@ def decision_logic(db: Database, metrics: dict) -> str:
         lines.append(f"  Avoid: {', '.join(fatigued_groups) or 'none'}")
         lines.append(f"  Suggested volume cap: 30-40 min, RPE 6-7")
     else:
-        lines.append(f"  Output a single recovery/rest recommendation (swim/walk/mobility).")
+        if period_active:
+            lines.append("  Output a single recovery/rest recommendation (walk/mobility/easy bike; do NOT recommend swim during period).")
+        else:
+            lines.append(f"  Output a single recovery/rest recommendation (swim/walk/mobility).")
         lines.append(f"  Do NOT recommend strength work.")
+
+    if period_active:
+        day_text = f"day {period_day}" if period_day is not None else "day unknown"
+        lines.append(f"  Period constraint: active ({day_text}) — DO NOT recommend swim; use walk/mobility/easy bike for aerobic work.")
 
     lines.append(
         f"\n  Signals used: HRV {hrv} (baseline {hrv_baseline}, {hrv_delta_pct:+.0f}%, rising {hrv_rising}d), "
