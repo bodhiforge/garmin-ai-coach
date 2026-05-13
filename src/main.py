@@ -30,6 +30,11 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+DEFAULT_RIKO_TRAINING_PUSH_CRON_ID = "bff6527a-9d3c-4b1b-acac-8f06a63fa1dc"
+
+
+def _riko_training_push_cron_id() -> str:
+    return os.environ.get("RIKO_TRAINING_PUSH_CRON_ID", DEFAULT_RIKO_TRAINING_PUSH_CRON_ID)
 
 
 def build_components(config_path: str | None = None):
@@ -119,10 +124,7 @@ def _trigger_riko_analysis() -> bool:
     """Trigger Riko (OpenClaw) to generate morning report. Returns True if triggered."""
     import shutil
     import subprocess
-    riko_cron_id = os.environ.get(
-        "RIKO_TRAINING_PUSH_CRON_ID",
-        "bff6527a-9d3c-4b1b-acac-8f06a63fa1dc",
-    )
+    riko_cron_id = _riko_training_push_cron_id()
     cron_path = os.pathsep.join([
         "/opt/homebrew/bin",
         "/usr/local/bin",
@@ -144,6 +146,49 @@ def _trigger_riko_analysis() -> bool:
     except Exception as e:
         print(f"WARNING: Riko trigger failed: {e}")
     return False
+
+
+def _riko_training_delivery_confirmed(triggered_mtime: float) -> bool:
+    """Return True only when OpenClaw says this training push was delivered."""
+    import json
+    import shutil
+    import subprocess
+    riko_cron_id = _riko_training_push_cron_id()
+    cron_path = os.pathsep.join([
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+        os.environ.get("PATH", ""),
+    ])
+    openclaw_bin = shutil.which("openclaw", path=cron_path) or "/opt/homebrew/bin/openclaw"
+    try:
+        result = subprocess.run(
+            [openclaw_bin, "cron", "runs", "--id", riko_cron_id, "--limit", "5"],
+            env={**os.environ, "PATH": cron_path},
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode != 0:
+            print(f"WARNING: Riko delivery check failed: {result.stderr[:200]}")
+            return False
+        entries = json.loads(result.stdout).get("entries", [])
+    except Exception as e:
+        print(f"WARNING: Riko delivery check failed: {e}")
+        return False
+
+    trigger_ms = int(triggered_mtime * 1000)
+    return any(
+        entry.get("jobId") == riko_cron_id
+        and entry.get("action") == "finished"
+        and entry.get("status") == "ok"
+        and (
+            entry.get("delivered") is True
+            or entry.get("deliveryStatus") == "delivered"
+            or entry.get("delivery", {}).get("delivered") is True
+        )
+        and int(entry.get("ts") or entry.get("runAtMs") or 0) >= trigger_ms
+        for entry in entries
+    )
 
 
 def _copy_legacy_flag_timestamp(legacy_path: Path, current_path: Path) -> None:
@@ -232,21 +277,24 @@ def cmd_sync(args: argparse.Namespace) -> None:
         if report_mtime > flag_mtime:
             report = report_path.read_text().strip()
             if report:
-                try:
-                    flag_sent.touch()
-                    print(f"Morning push delivered by Riko; marked sent ({len(report)} chars)")
-                    # Cleanup old flags
-                    for f in flag_dir.glob("training-pushed-*"):
-                        if f.name != flag_sent.name:
-                            age = (date.today() - date.fromisoformat(f.name.replace("training-pushed-", ""))).days
-                            if age > 7:
+                if not _riko_training_delivery_confirmed(flag_mtime):
+                    print("Riko report exists but Telegram delivery is not confirmed yet")
+                else:
+                    try:
+                        flag_sent.touch()
+                        print(f"Morning push delivered by Riko; marked sent ({len(report)} chars)")
+                        # Cleanup old flags
+                        for f in flag_dir.glob("training-pushed-*"):
+                            if f.name != flag_sent.name:
+                                age = (date.today() - date.fromisoformat(f.name.replace("training-pushed-", ""))).days
+                                if age > 7:
+                                    f.unlink(missing_ok=True)
+                        for f in flag_dir.glob("training-triggered-*"):
+                            if f.name != flag_triggered.name:
                                 f.unlink(missing_ok=True)
-                    for f in flag_dir.glob("training-triggered-*"):
-                        if f.name != flag_triggered.name:
-                            f.unlink(missing_ok=True)
-                except Exception as e:
-                    print(f"ERROR: Riko delivery bookkeeping failed: {e} — will retry next sync")
-            return
+                    except Exception as e:
+                        print(f"ERROR: Riko delivery bookkeeping failed: {e} — will retry next sync")
+                    return
 
     # Phase 3: Triggered but no report yet -> retry trigger if stale
     if flag_triggered.exists() and not flag_sent.exists():
