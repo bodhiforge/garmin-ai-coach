@@ -175,7 +175,48 @@ def discover_patterns(db: Database, days: int = DISCOVERY_WINDOW_DAYS) -> list[d
             "evidence": consecutive,
         })
 
+    late_cost = _late_night_cost(db, "sleep_deep_min", SLEEP_WINDOW_DAYS)
+    if late_cost is not None and late_cost["delta"] < 0:
+        findings.append({
+            "key": "sleep.late_night_deep_cost",
+            "statement": (
+                f"On nights you fall asleep ≥1h later than your usual time, deep sleep"
+                f" averages {abs(late_cost['delta']):.0f} min less"
+                f" (n={late_cost['n_condition']} late vs {late_cost['n_comparison']} normal"
+                f" nights, p={late_cost['p']})."
+            ),
+            "evidence": late_cost,
+        })
+
     return findings
+
+
+SLEEP_WINDOW_DAYS = 60
+LATE_NIGHT_THRESHOLD_MIN = 60
+
+
+def _sleep_start_minutes(value: str) -> int:
+    """'HH:MM' -> minutes since 18:00 (mod 24h), so 23:30 < 02:56 sorts sanely."""
+    hours, minutes = value.split(":")
+    return (int(hours) * 60 + int(minutes) - 18 * 60) % 1440
+
+
+def _late_night_cost(db: Database, outcome_metric: str, days: int) -> dict[str, Any] | None:
+    """Two-sample: nights ≥60min later than the personal median vs the rest."""
+    nights = [
+        (row, _sleep_start_minutes(row["sleep_start"]))
+        for row in db.get_recent_metrics(days=days)
+        if row.get("sleep_start") and row.get(outcome_metric) is not None
+    ]
+    if len(nights) < 2 * DISCOVERY_MIN_PAIRS:
+        return None
+    starts = sorted(minutes for _, minutes in nights)
+    median_start = starts[len(starts) // 2]
+    late = [row[outcome_metric] for row, minutes in nights
+            if minutes - median_start >= LATE_NIGHT_THRESHOLD_MIN]
+    normal = [row[outcome_metric] for row, minutes in nights
+              if minutes - median_start < LATE_NIGHT_THRESHOLD_MIN]
+    return gated_two_sample_effect(late, normal)
 
 
 def store_discovery_findings(db: Database) -> int:
