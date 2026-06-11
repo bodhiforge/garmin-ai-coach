@@ -427,6 +427,23 @@ def cmd_sync(args: argparse.Namespace) -> None:
     except Exception as error:
         logger.warning("Observation detection failed: %s", error)
 
+    # Strength findings are gated and key-deduped; cheap to run every sync.
+    from .ai.strength_profile import store_strength_findings
+    try:
+        new_findings = store_strength_findings(sync.db)
+        if new_findings:
+            print(f"New strength findings stored: {new_findings}")
+    except Exception as error:
+        logger.warning("Strength finding detection failed: %s", error)
+
+    # Saturday: surface at most one validated insight for the Deep Review.
+    if date.today().weekday() == 5:
+        try:
+            if _write_weekly_insight_card(sync.db):
+                print("Weekly insight card written")
+        except Exception as error:
+            logger.warning("Insight card failed: %s", error)
+
     # --- Morning push state machine ---
     today = str(date.today())
     flag_dir = Path.home() / "ai" / "data"
@@ -576,6 +593,34 @@ def cmd_impact(args: argparse.Namespace) -> None:
     from .ai.impact import impact_report
     report = impact_report(db, days=args.days)
     print(report)
+
+
+def _write_weekly_insight_card(db, card_path: Path | None = None) -> bool:
+    """Surface at most one validated insight per week as the Deep Review card.
+    Returns True when a card was written."""
+    from datetime import date as date_type
+    target = card_path or (Path.home() / "ai" / "data" / "signals" / "insight-card.txt")
+
+    already_this_week = [
+        row for row in db.get_insights(status="surfaced")
+        if row["surfaced_date"]
+        and (date_type.today() - date_type.fromisoformat(row["surfaced_date"])).days < 7
+    ]
+    if already_this_week:
+        return False
+
+    validated = db.get_insights(status="validated")
+    if not validated:
+        return False
+
+    top = validated[0]  # oldest first — FIFO keeps the queue honest
+    evidence = f"\nEvidence: {top['evidence_json']}" if top["evidence_json"] else ""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        f"# Did You Know — {date_type.today()}\n\n{top['statement']}{evidence}\n"
+    )
+    db.mark_insight_surfaced(top["id"])
+    return True
 
 
 def cmd_strength_profile(args: argparse.Namespace) -> None:
