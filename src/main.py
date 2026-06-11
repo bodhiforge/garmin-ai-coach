@@ -578,6 +578,22 @@ def cmd_impact(args: argparse.Namespace) -> None:
     print(report)
 
 
+def cmd_strength_profile(args: argparse.Namespace) -> None:
+    """Print the computed strength profile. Consumed by Riko for Q&A.
+    Reads the DB directly — no Garmin client, so it works offline and
+    never triggers a login."""
+    config = load_config(args.config)
+    db = Database(config.data_dir / "garmin.db")
+    from .ai.strength_profile import strength_profile_block, strength_structural_findings
+
+    print(strength_profile_block(db, days=args.days))
+    findings = strength_structural_findings(db, days=args.days)
+    if findings:
+        print("\n## Structural Findings")
+        for finding in findings:
+            print(f"- {finding['statement']}")
+
+
 def cmd_whoami(args: argparse.Namespace) -> None:
     """Show computed user model — what the system knows about you."""
     _, db, _, sync, _, _ = build_components(args.config)
@@ -785,6 +801,10 @@ def main() -> None:
     # whoami — computed user model
     subparsers.add_parser("whoami", help="What the system knows about you")
 
+    # strength-profile — computed strength intelligence
+    strength_parser = subparsers.add_parser("strength-profile", help="Computed strength profile")
+    strength_parser.add_argument("--days", type=int, default=90, help="Analysis window in days")
+
     # concern — manage training concerns
     concern_parser = subparsers.add_parser("concern", help="Manage training concerns")
     concern_parser.add_argument("action", choices=["add", "list", "resolve"], help="Action")
@@ -817,6 +837,7 @@ def main() -> None:
         "reflect": cmd_reflect,
         "impact": cmd_impact,
         "whoami": cmd_whoami,
+        "strength-profile": cmd_strength_profile,
         "concern": cmd_concern,
         "push-workout": cmd_push_workout,
     }
