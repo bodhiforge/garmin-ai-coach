@@ -739,6 +739,29 @@ def cmd_strength_profile(args: argparse.Namespace) -> None:
             print(f"- {finding['statement']}")
 
 
+def cmd_insight(args: argparse.Namespace) -> None:
+    """List/adopt/dismiss insights. Riko calls adopt/dismiss on Bodhi's word."""
+    config = load_config(args.config)
+    db = Database(config.data_dir / "garmin.db")
+    if args.action == "list":
+        for row in db.get_insights(status=args.status):
+            print(f"[{row['status']:>9}] {row['key']}: {row['statement']}")
+        return
+    if args.key is None:
+        print("insight adopt/dismiss requires a key")
+        return
+    matches = [row for row in db.get_insights() if row["key"] == args.key]
+    if not matches:
+        print(f"No insight with key {args.key}")
+        return
+    if args.action == "adopt":
+        db.mark_insight_adopted(matches[0]["id"], rule_ref=args.rule or "manual")
+        print(f"Adopted: {args.key}")
+    elif args.action == "dismiss":
+        db.mark_insight_dismissed(matches[0]["id"])
+        print(f"Dismissed: {args.key}")
+
+
 def cmd_basketball_profile(args: argparse.Namespace) -> None:
     """Print the computed basketball profile. Consumed by Riko for Q&A."""
     config = load_config(args.config)
@@ -962,6 +985,13 @@ def main() -> None:
     basketball_parser = subparsers.add_parser("basketball-profile", help="Computed basketball profile")
     basketball_parser.add_argument("--days", type=int, default=90, help="Analysis window in days")
 
+    # insight — list/adopt/dismiss discovered insights
+    insight_parser = subparsers.add_parser("insight", help="List/adopt/dismiss insights")
+    insight_parser.add_argument("action", choices=["list", "adopt", "dismiss"])
+    insight_parser.add_argument("key", nargs="?", default=None, help="Insight key (adopt/dismiss)")
+    insight_parser.add_argument("--status", default=None, help="Filter for list")
+    insight_parser.add_argument("--rule", default=None, help="Rule reference (adopt)")
+
     # concern — manage training concerns
     concern_parser = subparsers.add_parser("concern", help="Manage training concerns")
     concern_parser.add_argument("action", choices=["add", "list", "resolve"], help="Action")
@@ -996,6 +1026,7 @@ def main() -> None:
         "whoami": cmd_whoami,
         "strength-profile": cmd_strength_profile,
         "basketball-profile": cmd_basketball_profile,
+        "insight": cmd_insight,
         "concern": cmd_concern,
         "push-workout": cmd_push_workout,
     }

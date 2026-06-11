@@ -1775,7 +1775,9 @@ def recent_activity_detail(db: Database, hours: int = 48) -> str:
         te_label = a.get("training_effect_label") or ""
 
         intent, intent_why = _session_intent(a)
-        needed_hrs = _estimated_recovery_hours(load, te_ana, intent)
+        from .adopted import recovery_modifiers
+        personal_modifier = recovery_modifiers(db).get(str(type_), 1.0)
+        needed_hrs = round(_estimated_recovery_hours(load, te_ana, intent) * personal_modifier)
         recovered_pct = min(100, int(round((hrs_ago / needed_hrs) * 100))) if needed_hrs > 0 else 100
         residual_load = load * max(0, 1 - (hrs_ago / needed_hrs)) if needed_hrs > 0 else 0
         total_residual += residual_load
@@ -1793,7 +1795,8 @@ def recent_activity_detail(db: Database, hours: int = 48) -> str:
             f"  HR zones (min): Z1 {z1} | Z2 {z2} | Z3 {z3} | Z4 {z4} | Z5 {z5}",
             f"  Training load: {load:.0f} | TE aerobic: {te_aer:.1f} | TE anaerobic: {te_ana:.1f} | {te_label}",
             f"  Intent: {intent.upper()} ({intent_why})",
-            f"  Recovery: {hrs_ago:.1f}h elapsed / {needed_hrs}h needed = {recovered_pct}% recovered",
+            f"  Recovery: {hrs_ago:.1f}h elapsed / {needed_hrs}h needed = {recovered_pct}% recovered"
+            + (f" (personalized x{personal_modifier} from adopted insight)" if personal_modifier != 1.0 else ""),
         ]
         lines.extend(block)
 
