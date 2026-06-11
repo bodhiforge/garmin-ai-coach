@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Generator
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -163,6 +163,8 @@ class Database:
                 self._migrate_v5(conn)
             if current_version < 6:
                 self._migrate_v6(conn)
+            if current_version < 7:
+                self._migrate_v7(conn)
 
             if existing is None:
                 conn.execute(
@@ -260,6 +262,16 @@ class Database:
             )
             """
         )
+
+    @staticmethod
+    def _migrate_v7(conn: sqlite3.Connection) -> None:
+        """sleep_start/sleep_end were added ad-hoc on the production DB but never
+        captured in a migration — fresh databases lacked them."""
+        for column in ("sleep_start", "sleep_end"):
+            try:
+                conn.execute(f"ALTER TABLE daily_metrics ADD COLUMN {column} TEXT")
+            except sqlite3.OperationalError:
+                pass
 
     # -- Daily Metrics --
 
