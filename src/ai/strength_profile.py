@@ -106,6 +106,52 @@ def movement_pattern_matrix(db: Database, days: int = 90) -> dict[str, Any]:
     return {"counts": counts, "gaps": gaps, "unmapped": sorted(unmapped)}
 
 
+COMPOUND_PATTERNS = ("squat", "hinge", "lunge", "push_h", "push_v", "pull_h", "pull_v")
+COMPOUND_REST_FLOOR_SEC = 60
+
+
+def rep_zone_distribution(db: Database, days: int = 90) -> dict[str, Any]:
+    """Share of working sets per rep zone: strength ≤6, hypertrophy 7-12, endurance 13+."""
+    strength_sets = hypertrophy_sets = endurance_sets = 0
+    for row in load_strength_sets(db, days=days):
+        reps = row["reps"]
+        if not reps or reps <= 0:
+            continue
+        if reps <= STRENGTH_REP_MAX:
+            strength_sets += 1
+        elif reps <= HYPERTROPHY_REP_MAX:
+            hypertrophy_sets += 1
+        else:
+            endurance_sets += 1
+    total = strength_sets + hypertrophy_sets + endurance_sets
+    if total == 0:
+        return {"total_sets": 0, "strength_pct": 0.0, "hypertrophy_pct": 0.0, "endurance_pct": 0.0}
+    return {
+        "total_sets": total,
+        "strength_pct": round(100 * strength_sets / total, 1),
+        "hypertrophy_pct": round(100 * hypertrophy_sets / total, 1),
+        "endurance_pct": round(100 * endurance_sets / total, 1),
+    }
+
+
+def rest_interval_analysis(db: Database, days: int = 90) -> dict[str, Any]:
+    """Median rest on compound patterns; flags chronically rushed rests."""
+    compound_rests = [
+        row["rest_duration_sec"]
+        for row in load_strength_sets(db, days=days)
+        if row["rest_duration_sec"] is not None
+        and EXERCISE_PATTERN_MAP.get(row["exercise"]) in COMPOUND_PATTERNS
+    ]
+    if not compound_rests:
+        return {"compound_median_sec": None, "rushed_compounds": False, "sample": 0}
+    median_rest = median(compound_rests)
+    return {
+        "compound_median_sec": round(median_rest, 1),
+        "rushed_compounds": median_rest < COMPOUND_REST_FLOOR_SEC,
+        "sample": len(compound_rests),
+    }
+
+
 PLATEAU_MIN_SESSIONS = 4
 PLATEAU_BAND = 0.025  # last 3 session-bests within ±2.5% ⇒ flat
 
