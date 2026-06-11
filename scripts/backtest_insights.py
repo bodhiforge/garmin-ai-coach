@@ -44,3 +44,14 @@ print("\n=== Basketball profile ===")
 from src.ai.basketball_profile import basketball_profile_block
 
 print(basketball_profile_block(db))
+
+print("\n=== Sleep rhythm ===")
+from src.ai.discovery import sleep_rhythm_block
+
+print(sleep_rhythm_block(db))
+
+print("\n=== Deload check — would it fire today? ===")
+from src.ai.deload import deload_check
+
+deload = deload_check(db)
+print(deload if deload else "No deload due (load not rising 3+ weeks with degraded recovery)")
