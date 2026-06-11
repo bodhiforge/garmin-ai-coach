@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "AI-powered training coach using Garmin FR955 data"
 requires-python = ">=3.10"
 dependencies = [
-    "garminconnect>=0.2.25",
+    "garminconnect>=0.3.2",
     "fitdecode>=0.10.0",
     "openai>=1.0.0",
     "pydantic-ai>=1.0.0",
