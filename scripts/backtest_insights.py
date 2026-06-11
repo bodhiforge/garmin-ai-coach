@@ -26,3 +26,21 @@ for finding in strength_structural_findings(db):
 
 print("\n=== Strength profile block (as Riko would see it) ===")
 print(strength_profile_block(db))
+
+print("\n=== Discovery findings (gated) ===")
+from src.ai.discovery import discover_patterns
+
+for finding in discover_patterns(db):
+    print(f"- [{finding['key']}] {finding['statement']}")
+    print(f"  evidence: {finding['evidence']}")
+
+print("\n=== Warning composite — would it fire today? ===")
+from src.ai.warnings import health_warning
+
+warning = health_warning(db)
+print(warning if warning else "No warning (composite below threshold)")
+
+print("\n=== Basketball profile ===")
+from src.ai.basketball_profile import basketball_profile_block
+
+print(basketball_profile_block(db))
