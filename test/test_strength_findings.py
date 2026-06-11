@@ -17,7 +17,19 @@ def test_findings_fire_with_sufficient_evidence(db):
     findings = {finding["key"] for finding in strength_structural_findings(db)}
     assert "strength.pull_push_imbalance" in findings
     assert "strength.no_squat_pattern" in findings
-    assert "strength.no_strength_zone_work" in findings
+    assert "strength.minimal_heavy_dose" in findings
+
+
+def test_heavy_dose_silences_with_regular_heavy_work(db):
+    """2 genuinely heavy RDL sets per session (5 reps near best e1RM) ⇒ no finding."""
+    for index in range(12):
+        sets = [make_set("Lat Pulldown", 12, 70.0)] * 8 + \
+               [make_set("Romanian Deadlift", 5, 100.0)] * 2
+        month = 4 + index // 9
+        day = index % 9 + 1
+        seed_strength_activity(db, f"h{index}", f"2026-{month:02d}-{day:02d}", sets)
+    findings = {finding["key"] for finding in strength_structural_findings(db)}
+    assert "strength.minimal_heavy_dose" not in findings
 
 
 def test_findings_stay_silent_on_thin_data(db):

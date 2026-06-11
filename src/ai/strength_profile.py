@@ -197,6 +197,36 @@ def e1rm_trend(db: Database, days: int = 90) -> dict[str, dict[str, Any]]:
 FINDING_MIN_SESSIONS = 10
 FINDING_MIN_SETS = 80
 PULL_PUSH_RATIO_GATE = 2.0
+HEAVY_INTENSITY_FLOOR = 0.75      # a heavy set loads ≥75% of the exercise's own best e1RM
+HEAVY_SETS_PER_WEEK_FLOOR = 1.0   # below ⇒ minimal strength-zone exposure
+
+
+def heavy_set_dose(db: Database, days: int = 90) -> dict[str, Any]:
+    """Average weekly count of true heavy sets: ≤6 reps AND load ≥75% of that
+    exercise's best e1RM in the window. Dose, not percentage — adding light
+    volume elsewhere must not dilute the signal."""
+    rows = load_strength_sets(db, days=days)
+    best: dict[str, float] = {}
+    for row in rows:
+        if row["weight_lb"] and row["reps"]:
+            estimate = e1rm(row["weight_lb"], row["reps"])
+            best[row["exercise"]] = max(best.get(row["exercise"], 0.0), estimate)
+
+    heavy_sets = 0
+    for row in rows:
+        if not row["reps"] or row["reps"] > STRENGTH_REP_MAX:
+            continue
+        if not row["weight_lb"] or row["weight_lb"] <= 0:
+            continue
+        if row["weight_lb"] >= HEAVY_INTENSITY_FLOOR * best.get(row["exercise"], float("inf")):
+            heavy_sets += 1
+
+    weeks = max(days / 7, 1)
+    return {
+        "heavy_sets": heavy_sets,
+        "weekly_rate": round(heavy_sets / weeks, 2),
+        "window_days": days,
+    }
 
 
 def strength_structural_findings(db: Database, days: int = 90) -> list[dict[str, Any]]:
@@ -234,16 +264,17 @@ def strength_structural_findings(db: Database, days: int = 90) -> list[dict[str,
             "evidence": {"sessions": sessions, "lunge_sets": counts["lunge"], "window_days": days},
         })
 
-    zones = rep_zone_distribution(db, days=days)
-    if zones["total_sets"] >= FINDING_MIN_SETS and zones["strength_pct"] == 0.0:
+    dose = heavy_set_dose(db, days=days)
+    if dose["weekly_rate"] < HEAVY_SETS_PER_WEEK_FLOOR:
         findings.append({
-            "key": "strength.no_strength_zone_work",
+            "key": "strength.minimal_heavy_dose",
             "statement": (
-                f"0% of {zones['total_sets']} sets in the ≤{STRENGTH_REP_MAX}-rep strength zone"
-                f" ({days}d) — everything lives at {zones['hypertrophy_pct']}% hypertrophy /"
-                f" {zones['endurance_pct']}% endurance reps."
+                f"You average {dose['weekly_rate']} true heavy sets per week over the last"
+                f" {days} days (≤{STRENGTH_REP_MAX} reps at ≥75% of your own best e1RM —"
+                f" {dose['heavy_sets']} sets total). Strength adaptation generally needs"
+                " 2-6 weekly heavy sets on key lifts."
             ),
-            "evidence": {**zones, "window_days": days},
+            "evidence": {**dose, "intensity_floor": HEAVY_INTENSITY_FLOOR},
         })
 
     rest = rest_interval_analysis(db, days=days)
@@ -315,6 +346,12 @@ def strength_profile_block(db: Database, days: int = 90) -> str:
             f"Compound rest median: {rest['compound_median_sec']}s (n={rest['sample']})"
             + (" — RUSHED" if rest["rushed_compounds"] else "")
         )
+
+    dose = heavy_set_dose(db, days=days)
+    lines.append(
+        f"Heavy-set dose: {dose['weekly_rate']}/wk"
+        f" ({dose['heavy_sets']} sets ≤{STRENGTH_REP_MAX} reps at ≥75% e1RM, {days}d)"
+    )
 
     return "\n".join(lines)
 
