@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Generator
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -161,6 +161,8 @@ class Database:
                 self._migrate_v4(conn)
             if current_version < 5:
                 self._migrate_v5(conn)
+            if current_version < 6:
+                self._migrate_v6(conn)
 
             if existing is None:
                 conn.execute(
@@ -239,6 +241,25 @@ class Database:
                         SET weight_lb = ROUND(weight_kg * 2.2046226218, 2)
                         WHERE weight_lb IS NULL AND weight_kg IS NOT NULL"""
                 )
+
+    @staticmethod
+    def _migrate_v6(conn: sqlite3.Connection) -> None:
+        """Insights store: discovered patterns with evidence and a status lifecycle."""
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS insights (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                key TEXT NOT NULL UNIQUE,
+                discovered_date TEXT NOT NULL,
+                category TEXT NOT NULL,
+                statement TEXT NOT NULL,
+                evidence_json TEXT,
+                status TEXT NOT NULL DEFAULT 'validated',
+                surfaced_date TEXT,
+                adopted_rule_ref TEXT
+            )
+            """
+        )
 
     # -- Daily Metrics --
 
@@ -588,6 +609,57 @@ class Database:
                 (since_date,),
             ).fetchall()
             return [dict(r) for r in rows]
+
+    # -- Insights --
+
+    def insert_insight(
+        self,
+        key: str,
+        category: str,
+        statement: str,
+        evidence: dict[str, Any] | None,
+        status: str = "validated",
+    ) -> bool:
+        """Insert if key is new; returns True when a row was created."""
+        with self._connection() as conn:
+            cursor = conn.execute(
+                "INSERT OR IGNORE INTO insights"
+                " (key, discovered_date, category, statement, evidence_json, status)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    key,
+                    str(date.today()),
+                    category,
+                    statement,
+                    json.dumps(evidence) if evidence is not None else None,
+                    status,
+                ),
+            )
+            return cursor.rowcount > 0
+
+    def get_insights(self, status: str | None = None) -> list[dict[str, Any]]:
+        query = "SELECT * FROM insights"
+        parameters: tuple[Any, ...] = ()
+        if status is not None:
+            query += " WHERE status = ?"
+            parameters = (status,)
+        query += " ORDER BY discovered_date ASC, id ASC"
+        with self._connection() as conn:
+            return [dict(row) for row in conn.execute(query, parameters).fetchall()]
+
+    def mark_insight_surfaced(self, insight_id: int) -> None:
+        with self._connection() as conn:
+            conn.execute(
+                "UPDATE insights SET status = 'surfaced', surfaced_date = ? WHERE id = ?",
+                (str(date.today()), insight_id),
+            )
+
+    def mark_insight_adopted(self, insight_id: int, rule_ref: str) -> None:
+        with self._connection() as conn:
+            conn.execute(
+                "UPDATE insights SET status = 'adopted', adopted_rule_ref = ? WHERE id = ?",
+                (rule_ref, insight_id),
+            )
 
     def save_conversation(self, chat_id: str, messages_json: str) -> None:
         with self._connection() as conn:
