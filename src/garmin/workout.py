@@ -179,6 +179,31 @@ def update_workout(client: GarminClient, workout_id: str, plan: dict[str, Any]) 
         return False
 
 
+def schedule_workout_on(client: GarminClient, workout_id: str, target_date: str) -> bool:
+    """Schedule an uploaded workout on a calendar date (YYYY-MM-DD)."""
+    try:
+        client.client.schedule_workout(workout_id, target_date)
+        logger.info("Workout %s scheduled for %s", workout_id, target_date)
+        return True
+    except Exception as e:
+        logger.error("Failed to schedule workout %s: %s", workout_id, e)
+        return False
+
+
+PUSH_LOG_KEY = "daily_pushes"
+
+
+def already_pushed_today(data_dir: Path, day: str) -> bool:
+    tracker = load_workout_tracker(data_dir)
+    return day in tracker.get(PUSH_LOG_KEY, {})
+
+
+def record_push(data_dir: Path, day: str, workout_id: str, plan_name: str) -> None:
+    tracker = load_workout_tracker(data_dir)
+    tracker.setdefault(PUSH_LOG_KEY, {})[day] = {"workout_id": workout_id, "plan": plan_name}
+    save_workout_tracker(data_dir, tracker)
+
+
 def load_workout_tracker(data_dir: Path) -> dict[str, Any]:
     path = data_dir / "memory" / "workouts.json"
     if path.exists():

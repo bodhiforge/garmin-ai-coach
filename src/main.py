@@ -941,6 +941,16 @@ def cmd_push_workout(args: argparse.Namespace) -> None:
             "plan": plan,
         }
         save_workout_tracker(config.data_dir, tracker)
+
+        if args.date is not None:
+            from .garmin.workout import already_pushed_today, record_push, schedule_workout_on
+            if already_pushed_today(config.data_dir, args.date):
+                print(f"Already pushed a workout for {args.date}; skipping schedule")
+            elif schedule_workout_on(garmin_client, workout_id, args.date):
+                record_push(config.data_dir, args.date, workout_id, plan.get("name", "unnamed"))
+                print(f"Scheduled on watch calendar for {args.date}")
+            else:
+                print("WARNING: upload ok but scheduling failed — workout is in the library, not on the calendar")
     else:
         print("\nFailed to upload workout.")
         raise SystemExit(1)
@@ -1004,6 +1014,7 @@ def main() -> None:
     # push-workout — upload workout plan to Garmin
     push_parser = subparsers.add_parser("push-workout", help="Push workout JSON to Garmin")
     push_parser.add_argument("plan", help="Workout plan as JSON string")
+    push_parser.add_argument("--date", default=None, help="Schedule on watch calendar (YYYY-MM-DD)")
 
     # setup — interactive setup wizard
     subparsers.add_parser("setup", help="Interactive setup wizard for new users")
