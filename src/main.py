@@ -417,6 +417,16 @@ def cmd_sync(args: argparse.Namespace) -> None:
     _refresh_recent_gym_sets(sync, coach)
     _maybe_trigger_training_followup(sync, dry_run=False)
 
+    # Pattern detection runs every sync; keyed dedup makes it idempotent.
+    # Detection must never break the sync state machine.
+    from .ai.observations import detect_observations
+    try:
+        new_observations = detect_observations(sync.db, coach.memory_dir)
+        for observation in new_observations:
+            print(f"New observation: {observation}")
+    except Exception as error:
+        logger.warning("Observation detection failed: %s", error)
+
     # --- Morning push state machine ---
     today = str(date.today())
     flag_dir = Path.home() / "ai" / "data"

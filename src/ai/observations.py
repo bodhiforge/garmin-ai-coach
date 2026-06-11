@@ -52,6 +52,17 @@ def detect_observations(db: Database, memory_dir: Path) -> list[str]:
     obs_path.write_text("\n".join(lines) + "\n")
     logger.info("Saved %d new observations to observations.md", len(new_observations))
 
+    # The insights table is the source of truth for surfacing; the .md file
+    # stays as the human/LLM-readable mirror.
+    for obs in new_observations:
+        obs_key = obs.split(":")[0].strip() if ":" in obs else obs[:40]
+        db.insert_insight(
+            key=f"observation.{obs_key}",
+            category="observation",
+            statement=obs,
+            evidence=None,
+        )
+
     return new_observations
 
 
