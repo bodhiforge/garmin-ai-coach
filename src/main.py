@@ -656,10 +656,11 @@ def _write_monthly_narrative(db, target_path: Path | None = None) -> bool:
     from datetime import date
     if db.hours_since_last_notification("monthly_narrative") < MONTHLY_NARRATIVE_COOLDOWN_HOURS:
         return False
+    from .ai.discovery import sleep_rhythm_block
     from .ai.user_model import build_user_model
     target = target_path or (Path.home() / "ai" / "data" / "signals" / "monthly-narrative.txt")
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(build_user_model(db))
+    target.write_text(build_user_model(db) + "\n\n" + sleep_rhythm_block(db))
     db.add_notification("monthly_narrative", str(date.today()))
     return True
 

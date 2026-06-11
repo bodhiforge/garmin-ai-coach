@@ -188,6 +188,18 @@ def discover_patterns(db: Database, days: int = DISCOVERY_WINDOW_DAYS) -> list[d
             "evidence": late_cost,
         })
 
+    inconsistency = _bedtime_consistency(db)
+    if inconsistency is not None:
+        findings.append({
+            "key": "sleep.bedtime_inconsistency",
+            "statement": (
+                f"Your bedtime varies ±{inconsistency['std_min']:.0f} min"
+                f" (28d, n={inconsistency['n']} nights). Consistency is the single biggest"
+                " lever on sleep quality — ahead of duration."
+            ),
+            "evidence": inconsistency,
+        })
+
     return findings
 
 
@@ -217,6 +229,59 @@ def _late_night_cost(db: Database, outcome_metric: str, days: int) -> dict[str, 
     normal = [row[outcome_metric] for row, minutes in nights
               if minutes - median_start < LATE_NIGHT_THRESHOLD_MIN]
     return gated_two_sample_effect(late, normal)
+
+
+BEDTIME_STD_THRESHOLD_MIN = 75
+BEDTIME_MIN_NIGHTS = 14
+WINDOW_BUCKET_MIN = 30
+WINDOW_MIN_BUCKET_N = 5
+
+
+def _bedtime_consistency(db: Database, days: int = 28) -> dict[str, Any] | None:
+    starts = [
+        _sleep_start_minutes(row["sleep_start"])
+        for row in db.get_recent_metrics(days=days)
+        if row.get("sleep_start")
+    ]
+    if len(starts) < BEDTIME_MIN_NIGHTS:
+        return None
+    mean = sum(starts) / len(starts)
+    std = (sum((s - mean) ** 2 for s in starts) / len(starts)) ** 0.5
+    if std <= BEDTIME_STD_THRESHOLD_MIN:
+        return None
+    return {"std_min": round(std, 1), "n": len(starts), "window_days": days}
+
+
+def sleep_rhythm_block(db: Database, days: int = SLEEP_WINDOW_DAYS) -> str:
+    """Optimal sleep window by half-hour bucket — monthly narrative section."""
+    buckets: dict[int, list[float]] = {}
+    for row in db.get_recent_metrics(days=days):
+        if not row.get("sleep_start") or row.get("sleep_score") is None:
+            continue
+        bucket = _sleep_start_minutes(row["sleep_start"]) // WINDOW_BUCKET_MIN
+        buckets.setdefault(bucket, []).append(row["sleep_score"])
+    qualified = {b: scores for b, scores in buckets.items() if len(scores) >= WINDOW_MIN_BUCKET_N}
+    lines = ["## Sleep Rhythm (computed)"]
+    if not qualified:
+        lines.append("Not enough nights per bedtime bucket yet.")
+        return "\n".join(lines)
+    best = max(qualified, key=lambda b: sum(qualified[b]) / len(qualified[b]))
+    start_min = (best * WINDOW_BUCKET_MIN + 18 * 60) % 1440
+    end_min = (start_min + WINDOW_BUCKET_MIN) % 1440
+    lines.append(
+        f"Best-scoring bedtime window: {start_min // 60:02d}:{start_min % 60:02d}"
+        f"-{end_min // 60:02d}:{end_min % 60:02d}"
+        f" (avg sleep score {sum(qualified[best]) / len(qualified[best]):.0f},"
+        f" n={len(qualified[best])} nights)"
+    )
+    for bucket in sorted(qualified):
+        bucket_start = (bucket * WINDOW_BUCKET_MIN + 18 * 60) % 1440
+        scores = qualified[bucket]
+        lines.append(
+            f"- {bucket_start // 60:02d}:{bucket_start % 60:02d}: avg score"
+            f" {sum(scores) / len(scores):.0f} (n={len(scores)})"
+        )
+    return "\n".join(lines)
 
 
 def store_discovery_findings(db: Database) -> int:
