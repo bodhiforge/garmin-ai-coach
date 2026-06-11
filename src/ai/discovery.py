@@ -65,6 +65,119 @@ def gated_paired_effect(deltas: list[float], baseline_mean: float) -> dict[str, 
     }
 
 
+DISCOVERY_WINDOW_DAYS = 180
+TRACKED_ACTIVITY_TYPES = ("basketball", "skiing", "hiking", "strength", "lap_swimming", "tennis_v2")
+
+
+def _metrics_by_date(db: Database, days: int) -> dict[str, dict[str, Any]]:
+    return {row["date"]: row for row in db.get_recent_metrics(days=days)}
+
+
+def _next_day(day: str) -> str:
+    from datetime import date as date_type, timedelta
+    return str(date_type.fromisoformat(day) + timedelta(days=1))
+
+
+def _activity_next_day_metric(
+    db: Database, activity_type: str, metric: str, days: int
+) -> dict[str, Any] | None:
+    """Paired deltas: metric the morning after each session vs the morning of."""
+    metrics = _metrics_by_date(db, days + 1)
+    deltas: list[float] = []
+    baselines: list[float] = []
+    for activity in db.get_recent_activities(days=days, activity_type=activity_type):
+        day = str(activity["date"])
+        day_value = (metrics.get(day) or {}).get(metric)
+        next_value = (metrics.get(_next_day(day)) or {}).get(metric)
+        if day_value is None or next_value is None or day_value == 0:
+            continue
+        deltas.append(next_value - day_value)
+        baselines.append(day_value)
+    if not baselines:
+        return None
+    return gated_paired_effect(deltas, baseline_mean=sum(baselines) / len(baselines))
+
+
+def _period_metric_shift(db: Database, metric: str, days: int) -> dict[str, Any] | None:
+    """Two-sample: metric on active-period days vs all other days."""
+    period_values: list[float] = []
+    other_values: list[float] = []
+    for row in db.get_recent_metrics(days=days):
+        value = row.get(metric)
+        if value is None:
+            continue
+        phase = str(row.get("menstrual_phase") or "").strip().lower()
+        if phase in {"1", "period"}:
+            period_values.append(value)
+        else:
+            other_values.append(value)
+    return gated_two_sample_effect(period_values, other_values)
+
+
+def _consecutive_day_readiness_cost(db: Database, days: int) -> dict[str, Any] | None:
+    """Two-sample: readiness on days following a training day vs following rest."""
+    from datetime import date as date_type, timedelta
+    metrics = _metrics_by_date(db, days + 1)
+    activity_dates = {str(a["date"]) for a in db.get_recent_activities(days=days)}
+    after_training: list[float] = []
+    after_rest: list[float] = []
+    for day, row in metrics.items():
+        readiness = row.get("training_readiness_score")
+        if readiness is None:
+            continue
+        previous = str(date_type.fromisoformat(day) - timedelta(days=1))
+        (after_training if previous in activity_dates else after_rest).append(readiness)
+    return gated_two_sample_effect(after_training, after_rest)
+
+
+def discover_patterns(db: Database, days: int = DISCOVERY_WINDOW_DAYS) -> list[dict[str, Any]]:
+    """All gated discovery findings, ready for the insights store."""
+    findings: list[dict[str, Any]] = []
+
+    for activity_type in TRACKED_ACTIVITY_TYPES:
+        effect = _activity_next_day_metric(db, activity_type, "hrv_last_night", days)
+        if effect is not None:
+            direction = "drops" if effect["mean_delta"] < 0 else "rises"
+            findings.append({
+                "key": f"discovery.{activity_type}_next_day_hrv",
+                "statement": (
+                    f"Your HRV {direction} {abs(effect['relative_effect']) * 100:.0f}% on average"
+                    f" the morning after {activity_type} (n={effect['n']} sessions,"
+                    f" mean {effect['mean_delta']:+.1f} ms, p={effect['p']})."
+                ),
+                "evidence": effect,
+            })
+
+    period_shift = _period_metric_shift(db, "resting_hr", days)
+    if period_shift is not None:
+        findings.append({
+            "key": "discovery.period_resting_hr_shift",
+            "statement": (
+                f"Your resting HR runs {abs(period_shift['delta']):.1f} bpm"
+                f" {'higher' if period_shift['delta'] > 0 else 'lower'} on active-period days"
+                f" (n={period_shift['n_condition']} period days vs"
+                f" {period_shift['n_comparison']} other days, p={period_shift['p']})."
+            ),
+            "evidence": period_shift,
+        })
+
+    consecutive = _consecutive_day_readiness_cost(db, days)
+    if consecutive is not None:
+        findings.append({
+            "key": "discovery.consecutive_day_readiness_cost",
+            "statement": (
+                f"Mornings after a training day your readiness averages"
+                f" {abs(consecutive['delta']):.0f} points"
+                f" {'lower' if consecutive['delta'] < 0 else 'higher'} than after rest"
+                f" (n={consecutive['n_condition']} vs {consecutive['n_comparison']} days,"
+                f" p={consecutive['p']})."
+            ),
+            "evidence": consecutive,
+        })
+
+    return findings
+
+
 def gated_two_sample_effect(
     group_a: list[float], group_b: list[float]
 ) -> dict[str, Any] | None:
