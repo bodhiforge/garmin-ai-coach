@@ -24,7 +24,10 @@ def seed_strength_activity(
         "duration_min": 60,
         "training_load": 80,
     })
-    db.insert_gym_sets(activity_id, sets)
+    # gym_sets has UNIQUE(activity_id, set_number) with INSERT OR IGNORE —
+    # renumber so every seeded set survives.
+    numbered = [{**set_row, "set_number": index + 1} for index, set_row in enumerate(sets)]
+    db.insert_gym_sets(activity_id, numbered)
 
 
 def make_set(exercise: str, reps: int, weight_lb: float | None, rest_sec: int = 90) -> dict[str, Any]:

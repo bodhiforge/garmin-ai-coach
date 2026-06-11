@@ -72,6 +72,40 @@ def _is_lift(exercise: str) -> bool:
     return not exercise.startswith(EXCLUDED_PREFIXES)
 
 
+def weekly_muscle_volume(db: Database, days: int = 28) -> dict[str, dict[str, Any]]:
+    """Average weekly working sets per major muscle group vs volume landmarks."""
+    weeks = max(days / 7, 1)
+    set_counts: dict[str, int] = defaultdict(int)
+    for row in load_strength_sets(db, days=days):
+        for muscle in EXERCISE_MUSCLE_MAP.get(row["exercise"], ()):
+            set_counts[muscle] += 1
+
+    volume: dict[str, dict[str, Any]] = {}
+    for muscle in MAJOR_MUSCLE_GROUPS:
+        weekly_sets = round(set_counts.get(muscle, 0) / weeks, 1)
+        flag = "ok"
+        if weekly_sets < WEEKLY_SET_FLOOR:
+            flag = "below_floor"
+        elif weekly_sets > WEEKLY_SET_CEILING:
+            flag = "above_ceiling"
+        volume[muscle] = {"weekly_sets": weekly_sets, "flag": flag}
+    return volume
+
+
+def movement_pattern_matrix(db: Database, days: int = 90) -> dict[str, Any]:
+    """Set counts per movement pattern + list of uncovered core patterns."""
+    counts: dict[str, int] = {pattern: 0 for pattern in CORE_PATTERNS}
+    unmapped: set[str] = set()
+    for row in load_strength_sets(db, days=days):
+        pattern = EXERCISE_PATTERN_MAP.get(row["exercise"])
+        if pattern is None:
+            unmapped.add(row["exercise"])
+            continue
+        counts[pattern] += 1
+    gaps = [pattern for pattern in CORE_PATTERNS if counts[pattern] == 0]
+    return {"counts": counts, "gaps": gaps, "unmapped": sorted(unmapped)}
+
+
 PLATEAU_MIN_SESSIONS = 4
 PLATEAU_BAND = 0.025  # last 3 session-bests within ±2.5% ⇒ flat
 
