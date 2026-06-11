@@ -72,6 +72,48 @@ def _is_lift(exercise: str) -> bool:
     return not exercise.startswith(EXCLUDED_PREFIXES)
 
 
+PLATEAU_MIN_SESSIONS = 4
+PLATEAU_BAND = 0.025  # last 3 session-bests within ±2.5% ⇒ flat
+
+
+def e1rm(weight_lb: float, reps: int) -> float:
+    """Epley estimated 1-rep max."""
+    if reps <= 1:
+        return weight_lb
+    return weight_lb * (1 + reps / 30)
+
+
+def e1rm_trend(db: Database, days: int = 90) -> dict[str, dict[str, Any]]:
+    """Per exercise: session-best e1RM series (date ascending) + plateau flag."""
+    session_best: dict[str, dict[str, float]] = defaultdict(dict)
+    for row in load_strength_sets(db, days=days):
+        if row["weight_lb"] is None or row["weight_lb"] <= 0 or not row["reps"]:
+            continue
+        estimate = e1rm(row["weight_lb"], row["reps"])
+        day = str(row["date"])
+        best = session_best[row["exercise"]]
+        best[day] = max(best.get(day, 0.0), estimate)
+
+    trend: dict[str, dict[str, Any]] = {}
+    for exercise, by_day in session_best.items():
+        series = [round(by_day[day], 1) for day in sorted(by_day)]
+        recent = series[-3:]
+        is_flat = (
+            len(series) >= PLATEAU_MIN_SESSIONS
+            and len(recent) == 3
+            and (max(recent) - min(recent)) <= PLATEAU_BAND * max(recent)
+            and max(recent) <= max(series[:-3] + [recent[0]])
+        )
+        trend[exercise] = {
+            "series": series,
+            "latest_e1rm": series[-1],
+            "best_e1rm": max(series),
+            "sessions": len(series),
+            "plateau": is_flat,
+        }
+    return trend
+
+
 def load_strength_sets(db: Database, days: int = 90) -> list[dict[str, Any]]:
     """Flat list of lift sets across recent strength sessions, newest first.
     Each row: exercise, reps, weight_lb, rest_duration_sec, date, activity_id.
