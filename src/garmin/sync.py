@@ -144,7 +144,7 @@ class GarminSync:
 
             # Insert activity first (FK parent), then parse FIT
             fit_path = None
-            if activity["type"] in ("strength", "skiing"):
+            if activity["type"] in ("strength", "skiing", "basketball"):
                 fit_path = self.client.download_fit_file(activity_id, self.fit_dir)
                 if fit_path is not None:
                     activity["fit_file_path"] = str(fit_path)
