@@ -178,6 +178,27 @@ def discover_patterns(db: Database, days: int = DISCOVERY_WINDOW_DAYS) -> list[d
     return findings
 
 
+def store_discovery_findings(db: Database) -> int:
+    """Insert new findings; refresh evidence on existing keys. Returns count
+    of NEW rows only."""
+    inserted = 0
+    for finding in discover_patterns(db):
+        if db.insert_insight(
+            key=finding["key"],
+            category="discovery",
+            statement=finding["statement"],
+            evidence=finding["evidence"],
+        ):
+            inserted += 1
+        else:
+            db.refresh_insight_evidence(
+                key=finding["key"],
+                statement=finding["statement"],
+                evidence=finding["evidence"],
+            )
+    return inserted
+
+
 def gated_two_sample_effect(
     group_a: list[float], group_b: list[float]
 ) -> dict[str, Any] | None:

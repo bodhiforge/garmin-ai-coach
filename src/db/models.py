@@ -661,6 +661,25 @@ class Database:
                 (rule_ref, insight_id),
             )
 
+    def mark_insight_dismissed(self, insight_id: int) -> None:
+        with self._connection() as conn:
+            conn.execute(
+                "UPDATE insights SET status = 'dismissed' WHERE id = ?",
+                (insight_id,),
+            )
+
+    def refresh_insight_evidence(
+        self, key: str, statement: str, evidence: dict[str, Any] | None
+    ) -> bool:
+        """Update statement/evidence for an existing insight, preserving its
+        status and dates. Returns False when the key does not exist."""
+        with self._connection() as conn:
+            cursor = conn.execute(
+                "UPDATE insights SET statement = ?, evidence_json = ? WHERE key = ?",
+                (statement, json.dumps(evidence) if evidence is not None else None, key),
+            )
+            return cursor.rowcount > 0
+
     def save_conversation(self, chat_id: str, messages_json: str) -> None:
         with self._connection() as conn:
             conn.execute(
