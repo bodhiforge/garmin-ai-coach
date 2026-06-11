@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Generator
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -54,11 +54,33 @@ CREATE TABLE IF NOT EXISTS gym_sets (
     set_number INTEGER NOT NULL,
     exercise TEXT,
     reps INTEGER,
-    weight_kg REAL,
+    weight_lb REAL,
     peak_hr INTEGER,
     recovery_hr INTEGER,
     rest_duration_sec INTEGER,
     UNIQUE(activity_id, set_number)
+);
+
+CREATE TABLE IF NOT EXISTS manual_gym_sets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    activity_id TEXT NOT NULL REFERENCES activities(id),
+    exercise TEXT NOT NULL,
+    reps INTEGER,
+    weight_lb REAL,
+    set_count INTEGER NOT NULL DEFAULT 1,
+    note TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS training_feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    activity_id TEXT NOT NULL REFERENCES activities(id),
+    rpe REAL,
+    pain_area TEXT,
+    pain_level INTEGER,
+    menstrual_symptoms TEXT,
+    notes TEXT,
+    created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS ski_runs (
@@ -137,6 +159,8 @@ class Database:
                 self._migrate_v3(conn)
             if current_version < 4:
                 self._migrate_v4(conn)
+            if current_version < 5:
+                self._migrate_v5(conn)
 
             if existing is None:
                 conn.execute(
@@ -201,6 +225,20 @@ class Database:
                 except sqlite3.OperationalError:
                     pass
         conn.executescript(NEW_TABLES_SQL)
+
+    @staticmethod
+    def _migrate_v5(conn: sqlite3.Connection) -> None:
+        """Store extracted gym-set weights in pounds for local gym machine numbers."""
+        for table in ("gym_sets", "manual_gym_sets"):
+            cols = [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]
+            if "weight_lb" not in cols:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN weight_lb REAL")
+            if "weight_kg" in cols:
+                conn.execute(
+                    f"""UPDATE {table}
+                        SET weight_lb = ROUND(weight_kg * 2.2046226218, 2)
+                        WHERE weight_lb IS NULL AND weight_kg IS NOT NULL"""
+                )
 
     # -- Daily Metrics --
 
@@ -343,7 +381,7 @@ class Database:
         with self._connection() as conn:
             conn.executemany(
                 """INSERT OR IGNORE INTO gym_sets
-                   (activity_id, set_number, exercise, reps, weight_kg,
+                   (activity_id, set_number, exercise, reps, weight_lb,
                     peak_hr, recovery_hr, rest_duration_sec)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 [
@@ -352,7 +390,7 @@ class Database:
                         s["set_number"],
                         s.get("exercise"),
                         s.get("reps"),
-                        s.get("weight_kg"),
+                        s.get("weight_lb"),
                         s.get("peak_hr"),
                         s.get("recovery_hr"),
                         s.get("rest_duration_sec"),
@@ -367,7 +405,103 @@ class Database:
                 "SELECT * FROM gym_sets WHERE activity_id = ? ORDER BY set_number",
                 (str(activity_id),),
             ).fetchall()
-            return [dict(r) for r in rows]
+            base_sets = [dict(r) for r in rows]
+            manual_rows = conn.execute(
+                "SELECT * FROM manual_gym_sets WHERE activity_id = ? ORDER BY id",
+                (str(activity_id),),
+            ).fetchall()
+
+            next_set_number = (
+                max((set_row.get("set_number") or 0) for set_row in base_sets) + 1
+                if base_sets else 1
+            )
+            manual_sets: list[dict[str, Any]] = []
+            for manual_row in manual_rows:
+                manual = dict(manual_row)
+                set_count = manual.get("set_count") or 1
+                for offset in range(set_count):
+                    manual_sets.append({
+                        "id": f"manual-{manual['id']}-{offset + 1}",
+                        "activity_id": str(activity_id),
+                        "set_number": next_set_number + len(manual_sets),
+                        "exercise": manual.get("exercise"),
+                        "reps": manual.get("reps"),
+                        "weight_lb": manual.get("weight_lb"),
+                        "peak_hr": None,
+                        "recovery_hr": None,
+                        "rest_duration_sec": None,
+                        "source": "manual",
+                        "note": manual.get("note"),
+                    })
+
+            return base_sets + manual_sets
+
+    def insert_manual_gym_sets(
+        self, activity_id: str, entries: list[dict[str, Any]], note: str | None = None
+    ) -> int:
+        timestamp = datetime.now().isoformat(timespec="seconds")
+        rows = []
+        for entry in entries:
+            exercise = str(entry.get("exercise") or "").strip()
+            if exercise == "":
+                continue
+            rows.append((
+                str(activity_id),
+                exercise,
+                entry.get("reps"),
+                entry.get("weight_lb"),
+                int(entry.get("sets") or entry.get("set_count") or 1),
+                note or entry.get("note"),
+                timestamp,
+            ))
+        if not rows:
+            return 0
+        with self._connection() as conn:
+            conn.executemany(
+                """INSERT INTO manual_gym_sets
+                   (activity_id, exercise, reps, weight_lb, set_count, note, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                rows,
+            )
+        return len(rows)
+
+    def insert_training_feedback(
+        self,
+        activity_id: str,
+        *,
+        rpe: float | None = None,
+        pain_area: str | None = None,
+        pain_level: int | None = None,
+        menstrual_symptoms: str | None = None,
+        notes: str | None = None,
+    ) -> int:
+        with self._connection() as conn:
+            cursor = conn.execute(
+                """INSERT INTO training_feedback
+                   (activity_id, rpe, pain_area, pain_level, menstrual_symptoms, notes, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    str(activity_id),
+                    rpe,
+                    pain_area,
+                    pain_level,
+                    menstrual_symptoms,
+                    notes,
+                    datetime.now().isoformat(timespec="seconds"),
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def get_training_feedback(self, activity_id: str) -> dict[str, Any] | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                """SELECT * FROM training_feedback
+                   WHERE activity_id = ?
+                   ORDER BY id DESC
+                   LIMIT 1""",
+                (str(activity_id),),
+            ).fetchone()
+            return dict(row) if row else None
 
     # -- Ski Runs --
 
@@ -600,4 +734,3 @@ class Database:
                 elif r["training_load"] is not None:
                     total += r["training_load"]
             return total
-

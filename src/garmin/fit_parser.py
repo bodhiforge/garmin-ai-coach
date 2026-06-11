@@ -27,8 +27,8 @@ def parse_gym_session(fit_path: str | Path) -> list[dict[str, Any]]:
 
             elif frame.name == "set":
                 set_type = _get_field(frame, "set_type")
-                # set_type 0 = active set, 1 = rest
-                if set_type == 0:
+                # fitdecode returns 'active' / 'rest' as strings, not ints.
+                if set_type == "active":
                     exercise_name = _get_field(frame, "exercise_name")
                     category = _get_field(frame, "category")
                     reps = _get_field(frame, "repetitions")
@@ -44,7 +44,7 @@ def parse_gym_session(fit_path: str | Path) -> list[dict[str, Any]]:
                         "set_number": len(sets) + 1,
                         "exercise": str(exercise),
                         "reps": int(reps) if reps is not None else None,
-                        "weight_kg": round(float(weight), 1) if weight is not None else None,
+                        "weight_lb": round(float(weight) * 2.2046226218, 1) if weight is not None else None,
                         "peak_hr": None,
                         "recovery_hr": None,
                         "rest_duration_sec": None,

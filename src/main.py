@@ -31,10 +31,52 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 DEFAULT_RIKO_TRAINING_PUSH_CRON_ID = "bff6527a-9d3c-4b1b-acac-8f06a63fa1dc"
+RIKO_TRAINING_FOLLOWUP_CRON_NAME = "Riko Training Follow-Up"
 
 
 def _riko_training_push_cron_id() -> str:
     return os.environ.get("RIKO_TRAINING_PUSH_CRON_ID", DEFAULT_RIKO_TRAINING_PUSH_CRON_ID)
+
+
+def _openclaw_cron_id_by_name(openclaw_bin: str, cron_path: str, name: str) -> str | None:
+    import json
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            [openclaw_bin, "cron", "list", "--json", "--all"],
+            env={**os.environ, "PATH": cron_path},
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except Exception as error:
+        print(f"WARNING: Riko cron discovery failed: {error}")
+        return None
+
+    if result.returncode != 0:
+        print(f"WARNING: Riko cron discovery failed: {result.stderr[:200]}")
+        return None
+
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        print(f"WARNING: Riko cron discovery returned invalid JSON: {error}")
+        return None
+
+    jobs = payload.get("jobs", []) if isinstance(payload, dict) else []
+    return next(
+        (str(job.get("id")) for job in jobs if job.get("name") == name and job.get("id")),
+        None,
+    )
+
+
+def _riko_training_followup_cron_id(openclaw_bin: str, cron_path: str) -> str | None:
+    return os.environ.get("RIKO_TRAINING_FOLLOWUP_CRON_ID") or _openclaw_cron_id_by_name(
+        openclaw_bin,
+        cron_path,
+        RIKO_TRAINING_FOLLOWUP_CRON_NAME,
+    )
 
 
 def build_components(config_path: str | None = None):
@@ -148,6 +190,37 @@ def _trigger_riko_analysis() -> bool:
     return False
 
 
+def _trigger_riko_training_followup() -> bool:
+    """Trigger Riko (OpenClaw) to ask for missing post-workout data."""
+    import shutil
+    import subprocess
+    cron_path = os.pathsep.join([
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+        os.environ.get("PATH", ""),
+    ])
+    openclaw_bin = shutil.which("openclaw", path=cron_path) or "/opt/homebrew/bin/openclaw"
+    riko_cron_id = _riko_training_followup_cron_id(openclaw_bin, cron_path)
+    if riko_cron_id is None:
+        print(f"WARNING: Riko follow-up trigger failed: {RIKO_TRAINING_FOLLOWUP_CRON_NAME} cron not found by name")
+        return False
+    try:
+        result = subprocess.run(
+            [openclaw_bin, "cron", "run", riko_cron_id],
+            env={**os.environ, "PATH": cron_path},
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0:
+            print(f"Riko training follow-up triggered (cron {riko_cron_id})")
+            return True
+        print(f"WARNING: Riko follow-up trigger failed: {result.stderr[:200]}")
+    except Exception as e:
+        print(f"WARNING: Riko follow-up trigger failed: {e}")
+    return False
+
+
 def _riko_training_delivery_confirmed(triggered_mtime: float) -> bool:
     """Return True only when OpenClaw says this training push was delivered."""
     import json
@@ -189,6 +262,104 @@ def _riko_training_delivery_confirmed(triggered_mtime: float) -> bool:
         and int(entry.get("ts") or entry.get("runAtMs") or 0) >= trigger_ms
         for entry in entries
     )
+
+
+def _refresh_recent_gym_sets(sync, coach) -> None:
+    """Re-fetch gym_sets from Garmin API after post-workout manual edits.
+
+    The watch auto-detects reps during a session, but weight + exercise name are
+    filled in Garmin Connect afterwards. The first sync may run before those
+    edits land. This catches them before the morning digest is built.
+    """
+    refreshed = sync.refresh_recent_gym_sets(days=14)
+    if refreshed > 0:
+        print(f"Refreshed edited gym_sets for {refreshed} recent strength session(s)")
+
+
+def _strength_followup_signal(db: Database) -> tuple[str, str] | None:
+    """Return (notification_type, signal) when a post-strength follow-up is needed."""
+    activities = db.get_recent_activities(days=2, activity_type="strength")
+    if not activities:
+        return None
+
+    activity = activities[0]
+    activity_id = activity["id"]
+    notification_type = f"strength_followup_{activity_id}"
+    if db.get_last_notification(notification_type) is not None:
+        return None
+
+    sets = db.get_gym_sets(activity_id)
+    feedback = db.get_training_feedback(activity_id)
+    strength_sets = [
+        set_row for set_row in sets
+        if (set_row.get("reps") or 0) > 0
+        and str(set_row.get("exercise") or "").lower() not in ("unknown", "treadmill", "cardio")
+    ]
+    set_count = len(strength_sets)
+    weighted_sets = sum(
+        1 for set_row in strength_sets
+        if set_row.get("weight_lb") is not None and set_row.get("weight_lb") > 0
+    )
+    weight_capture_rate = weighted_sets / set_count if set_count > 0 else 0
+
+    needs = []
+    if set_count == 0:
+        needs.append("exercise list / reps because Garmin has no usable set detail")
+    elif weight_capture_rate < 0.6:
+        needs.append(f"loads for main lifts (weight capture {weighted_sets}/{set_count})")
+    if feedback is None:
+        needs.append("session RPE")
+        needs.append("ankle/knee/low-back pain 0-10")
+
+    duration_min = activity.get("duration_min") or 0
+    training_load = activity.get("training_load") or 0
+    z4z5_min = ((activity.get("hr_zone4_sec") or 0) + (activity.get("hr_zone5_sec") or 0)) / 60
+    if duration_min >= 75 or set_count >= 20 or training_load >= 100 or z4z5_min >= 8:
+        needs.append("how hard it felt after the high-volume session")
+
+    if not needs:
+        return None
+
+    exercise_names = []
+    for set_row in strength_sets:
+        exercise = str(set_row.get("exercise") or "").strip()
+        if exercise and exercise not in exercise_names:
+            exercise_names.append(exercise)
+
+    signal_path = Path.home() / "ai" / "data" / "signals" / "training-followup.txt"
+    signal_path.parent.mkdir(parents=True, exist_ok=True)
+    signal = "\n".join([
+        f"# Training Follow-Up Signal — {activity.get('date')}",
+        f"Activity ID: {activity_id}",
+        "Type: strength",
+        f"Duration: {duration_min:.0f} min",
+        f"Training load: {training_load:.0f}",
+        f"Strength sets: {set_count}",
+        f"Weighted sets: {weighted_sets}/{set_count}",
+        f"Z4/Z5: {z4z5_min:.0f} min",
+        f"Known exercises: {', '.join(exercise_names[:8]) if exercise_names else 'unknown'}",
+        f"Missing pieces to ask for: {', '.join(needs)}",
+        "",
+        "Ask one concise follow-up. Do not ask for everything if the user already provided feedback.",
+        "Explain that the answer controls the next progression/volume decision.",
+    ])
+    signal_path.write_text(signal)
+    return notification_type, signal
+
+
+def _maybe_trigger_training_followup(sync: GarminSync, *, dry_run: bool) -> None:
+    signal = _strength_followup_signal(sync.db)
+    if signal is None:
+        return
+
+    notification_type, content = signal
+    print(f"Training follow-up needed: {notification_type}")
+    print(content)
+    if dry_run:
+        return
+
+    if _trigger_riko_training_followup():
+        sync.db.add_notification(notification_type, content)
 
 
 def _copy_legacy_flag_timestamp(legacy_path: Path, current_path: Path) -> None:
@@ -243,6 +414,8 @@ def cmd_sync(args: argparse.Namespace) -> None:
 
     new_activities = sync.sync_activities()
     print(f"Activities synced: {len(new_activities)} new")
+    _refresh_recent_gym_sets(sync, coach)
+    _maybe_trigger_training_followup(sync, dry_run=False)
 
     # --- Morning push state machine ---
     today = str(date.today())
@@ -283,6 +456,22 @@ def cmd_sync(args: argparse.Namespace) -> None:
                     try:
                         flag_sent.touch()
                         print(f"Morning push delivered by Riko; marked sent ({len(report)} chars)")
+
+                        # Snapshot to history/ so the Saturday Training Deep Review
+                        # can audit the week's actual morning calls.
+                        history_dir = flag_dir / "signals" / "history"
+                        history_dir.mkdir(parents=True, exist_ok=True)
+                        snapshot = history_dir / f"{today}.txt"
+                        snapshot.write_text(report)
+                        # Prune snapshots older than 30 days.
+                        for f in history_dir.glob("*.txt"):
+                            try:
+                                snap_date = date.fromisoformat(f.stem)
+                                if (date.today() - snap_date).days > 30:
+                                    f.unlink(missing_ok=True)
+                            except ValueError:
+                                pass
+
                         # Cleanup old flags
                         for f in flag_dir.glob("training-pushed-*"):
                             if f.name != flag_sent.name:
@@ -313,6 +502,7 @@ def cmd_morning(args: argparse.Namespace) -> None:
 
     metrics = sync.sync_daily_metrics()
     sync.sync_activities()
+    _refresh_recent_gym_sets(sync, coach)
 
     _write_training_digest(config, sync, coach, metrics)
 
@@ -332,6 +522,7 @@ def cmd_analyze(args: argparse.Namespace) -> None:
 
     # Sync first to get latest
     new_activities = sync.sync_activities()
+    _refresh_recent_gym_sets(sync, coach)
     if not new_activities:
         print("No new activities to analyze.")
         return
@@ -370,6 +561,7 @@ def cmd_impact(args: argparse.Namespace) -> None:
 
     sync.sync_daily_metrics()
     sync.sync_activities()
+    sync.refresh_recent_gym_sets(days=14)
 
     from .ai.impact import impact_report
     report = impact_report(db, days=args.days)
@@ -382,6 +574,7 @@ def cmd_whoami(args: argparse.Namespace) -> None:
 
     sync.sync_daily_metrics()
     sync.sync_activities()
+    sync.refresh_recent_gym_sets(days=14)
 
     from .ai.user_model import build_user_model
     from .ai.anomaly import detect_anomalies, format_anomalies
@@ -442,6 +635,8 @@ def _run_reflect(sync: GarminSync, coach: AICoach, bot, *, dry_run: bool) -> Non
     # Smart sync with merge
     sync.sync_daily_metrics()
     sync.sync_activities()
+    sync.refresh_recent_gym_sets(days=14)
+    _maybe_trigger_training_followup(sync, dry_run=dry_run)
 
     # Detect behavioral patterns and save to observations.md
     from .ai.observations import detect_observations

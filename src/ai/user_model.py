@@ -219,7 +219,7 @@ def _progression_trajectory(db: Database) -> str:
             sets = db.get_gym_sets(a["id"])
             for s in (sets or []):
                 ex = s.get("exercise", "unknown")
-                weight = s.get("weight_kg", 0) or 0
+                weight = s.get("weight_lb", 0) or 0
                 if weight > 0:
                     if ex not in exercise_trends:
                         exercise_trends[ex] = []
@@ -235,11 +235,11 @@ def _progression_trajectory(db: Database) -> str:
                 change = (last_w - first_w) / first_w * 100
                 name = ex.replace("_", " ").title()
                 if abs(change) < 3:
-                    lines.append(f"{name}: stalled at {last_w:.0f} kg")
+                    lines.append(f"{name}: stalled at {last_w:.0f} lb")
                 elif change > 0:
-                    lines.append(f"{name}: {first_w:.0f} → {last_w:.0f} kg ({change:+.0f}%)")
+                    lines.append(f"{name}: {first_w:.0f} → {last_w:.0f} lb ({change:+.0f}%)")
                 else:
-                    lines.append(f"{name}: declining {first_w:.0f} → {last_w:.0f} kg ({change:+.0f}%)")
+                    lines.append(f"{name}: declining {first_w:.0f} → {last_w:.0f} lb ({change:+.0f}%)")
 
     # HRV trajectory
     metrics = db.get_recent_metrics(days=90)

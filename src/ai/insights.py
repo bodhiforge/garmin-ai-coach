@@ -2,13 +2,245 @@
 
 from __future__ import annotations
 
+import os
 from datetime import date, timedelta
+from pathlib import Path
 from typing import Any
+
+import yaml
 
 from ..db.models import Database
 
 
-PERIOD_PHASES = {"period", "menstrual", "menstruation", "menses", "1"}
+PERIOD_PHASES = {"period", "menstrual", "menstruation", "menses", "1", "phase_1"}
+OUTDOOR_SLOT_ACTIVITY_TYPES = {
+    "hiking",
+    "walking",
+    "cycling",
+    "tennis",
+    "skiing",
+    "surfing",
+    "camping",
+}
+HIGH_IMPACT_ACTIVITY_TYPES = {"running", "basketball", "tennis", "skiing"}
+PRIORITY_STRENGTH_GROUPS = ("back", "shoulders", "posterior_chain", "glutes", "quads", "core")
+MOVEMENT_PATTERN_BY_GROUP = {
+    "back": "horizontal/vertical pull (rows, pulldowns)",
+    "shoulders": "scapular control + shoulder health (face pulls, controlled press)",
+    "posterior_chain": "hinge pattern (RDL, hip hinge)",
+    "glutes": "hip extension (hip thrust, glute bridge)",
+    "core": "anti-rotation / trunk control (Pallof press, dead bug)",
+    "quads": "controlled quad / single-leg exposure (leg press, split squat, step-up; low-to-moderate volume)",
+}
+WEEKLY_PLAN_ENV = "GARMIN_WEEKLY_PLAN_PATH"
+HOME_MICRO_SESSION = (
+    "home micro-session (90/90 breathing, dead bug regression, wall slide/wall angel, "
+    "glute bridge hold, optional right-ankle balance)"
+)
+RECENT_STRENGTH_OVERRIDE_HOURS = 36
+HIGH_VOLUME_STRENGTH_SET_THRESHOLD = 18
+OVERLAP_STRENGTH_GROUPS = {"back", "shoulders", "posterior_chain", "glutes", "core", "quads"}
+RECOVERY_PLAN_TYPES = {"recovery", "recovery_skill", "rest", "active_recovery"}
+
+
+def _weekly_plan_path() -> Path:
+    return Path(os.environ.get(WEEKLY_PLAN_ENV, Path.home() / "ai" / "data" / "weekly-plan.md"))
+
+
+def _planned_session_for_date(target_date: date | None = None) -> dict[str, Any] | None:
+    """Return the weekly-plan session for target_date, if one exists."""
+    day = target_date or date.today()
+    plan_path = _weekly_plan_path()
+    if not plan_path.exists():
+        return None
+
+    text = plan_path.read_text()
+    if not text.startswith("---"):
+        return None
+
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        return None
+
+    try:
+        data = yaml.safe_load(parts[1]) or {}
+    except yaml.YAMLError:
+        return None
+
+    sessions = data.get("sessions") or []
+    for session in sessions:
+        session_date = session.get("date")
+        if str(session_date) != day.isoformat():
+            continue
+        status = str(session.get("status") or "planned").lower()
+        if status in {"cancelled", "canceled", "skipped"}:
+            return None
+        return session
+
+    return None
+
+
+def _planned_session_type(target_date: date | None = None) -> str:
+    session = _planned_session_for_date(target_date)
+    return str((session or {}).get("type") or "").lower()
+
+
+def _is_recovery_plan_type(planned_type: str) -> bool:
+    return planned_type in RECOVERY_PLAN_TYPES or "recovery" in planned_type
+
+
+def _groups_from_training_text(text: object) -> set[str]:
+    normalized = _normalized_exercise_name(text)
+    groups: set[str] = set()
+    for exercise_key, group_map in _MUSCLE_MAP_BY_EXERCISE.items():
+        if exercise_key in normalized:
+            groups.update(group_map.keys())
+    return groups
+
+
+def _planned_strength_groups(planned_session: dict[str, Any] | None) -> set[str]:
+    if planned_session is None:
+        return set()
+
+    planned_type = str(planned_session.get("type") or "").lower()
+    type_groups: set[str] = set()
+    if "lower" in planned_type or "posterior" in planned_type:
+        type_groups.update({"posterior_chain", "glutes", "quads", "core"})
+    if "upper" in planned_type or "pull" in planned_type:
+        type_groups.update({"back", "shoulders", "core"})
+
+    prescription_groups = _groups_from_training_text(planned_session.get("prescription") or "")
+    return type_groups | prescription_groups
+
+
+def _activity_hours_before_target(activity: dict[str, Any], target_date: date) -> float | None:
+    activity_date = activity.get("date")
+    if activity_date is None:
+        return None
+    try:
+        day_delta = (target_date - date.fromisoformat(str(activity_date))).days
+    except ValueError:
+        return None
+    if day_delta < 0:
+        return None
+    # Date-only Garmin summaries are not precise enough for same-day sequencing.
+    # Treat yesterday as roughly 24h before the target day, which is the key
+    # recovery boundary for morning pushes.
+    return float(day_delta * 24)
+
+
+def _strength_activity_summary(db: Database, activity: dict[str, Any]) -> dict[str, Any]:
+    sets = db.get_gym_sets(activity["id"])
+    ignored_keywords = ("unknown", "treadmill", "cardio")
+    strength_sets = [
+        set_row for set_row in sets
+        if not any(keyword in _normalized_exercise_name(set_row.get("exercise")) for keyword in ignored_keywords)
+        and (set_row.get("reps") or 0) > 0
+    ]
+
+    group_load: dict[str, float] = {}
+    exercises = sorted({
+        str(set_row.get("exercise"))
+        for set_row in strength_sets
+        if set_row.get("exercise")
+    })
+    unmapped_exercises = set()
+    for set_row in strength_sets:
+        group_map = _exercise_group_map(set_row.get("exercise"))
+        if not group_map:
+            if set_row.get("exercise"):
+                unmapped_exercises.add(str(set_row.get("exercise")))
+            continue
+        for group, share in group_map.items():
+            group_load[group] = group_load.get(group, 0) + share
+
+    top_groups = [
+        group for group, _value in sorted(group_load.items(), key=lambda item: item[1], reverse=True)[:6]
+    ]
+    return {
+        "date": str(activity.get("date") or "unknown"),
+        "duration_min": activity.get("duration_min") or 0,
+        "training_load": activity.get("training_load") or 0,
+        "set_count": len(strength_sets),
+        "rep_count": sum(set_row.get("reps") or 0 for set_row in strength_sets),
+        "groups": top_groups,
+        "exercises": exercises,
+        "unmapped_exercises": sorted(unmapped_exercises),
+    }
+
+
+def _latest_strength_summary(db: Database, target_date: date) -> dict[str, Any] | None:
+    for activity in db.get_recent_activities(days=14, activity_type="strength"):
+        hours_before = _activity_hours_before_target(activity, target_date)
+        if hours_before is None:
+            continue
+        summary = _strength_activity_summary(db, activity)
+        summary["hours_before_target"] = hours_before
+        return summary
+    return None
+
+
+def _adaptive_plan_override(
+    db: Database,
+    metrics: dict,
+    planned_session: dict[str, Any] | None,
+    target_date: date | None = None,
+) -> dict[str, Any] | None:
+    """Return a professional-plan override when yesterday's actual work beats the template."""
+    day = target_date or date.today()
+    planned_type = str((planned_session or {}).get("type") or "").lower()
+    if "strength" not in planned_type:
+        return None
+
+    latest = _latest_strength_summary(db, day)
+    if latest is None:
+        return None
+    if latest["hours_before_target"] > RECENT_STRENGTH_OVERRIDE_HOURS:
+        return None
+
+    actual_groups = set(latest["groups"])
+    planned_groups = _planned_strength_groups(planned_session)
+    overlapping_groups = sorted((actual_groups & planned_groups) & OVERLAP_STRENGTH_GROUPS)
+    if len(overlapping_groups) < 2:
+        return None
+
+    acwr = metrics.get("acwr_ratio") or 0
+    set_count = latest["set_count"]
+    duration_min = latest["duration_min"]
+    high_volume = set_count >= HIGH_VOLUME_STRENGTH_SET_THRESHOLD or duration_min >= 55
+    elevated_load = acwr > 1.3
+    if not high_volume and not elevated_load:
+        return None
+
+    reasons = []
+    if high_volume:
+        reasons.append(f"last strength was {duration_min:.0f} min / {set_count} sets")
+    if elevated_load:
+        reasons.append(f"ACWR {acwr:.2f} > 1.30")
+
+    return {
+        "latest": latest,
+        "planned_type": planned_type,
+        "planned_groups": sorted(planned_groups),
+        "overlapping_groups": overlapping_groups,
+        "reasons": reasons,
+        "eligible_modalities": [
+            "swim technique or easy Zone 1-2 cardio",
+            "core-control micro work",
+            "non-overlap gym technique only if the user insists on gym",
+        ],
+    }
+
+
+def _sleep_debt_minutes(db: Database, *, days: int = 7, target_sleep_min: int = 420) -> int:
+    """Calculate sleep debt from recorded sleep nights only; missing data is unknown, not zero sleep."""
+    entries = db.get_sleep_stages(days=days) or db.get_recent_metrics(days=days) or []
+    sleep_values = [
+        entry.get("sleep_duration_min")
+        for entry in entries
+        if entry.get("sleep_duration_min") is not None
+    ]
+    return sum(max(0, target_sleep_min - int(sleep_min)) for sleep_min in sleep_values)
 
 
 def ski_insights(db: Database) -> str:
@@ -199,7 +431,7 @@ def gym_insights(db: Database) -> str:
         total_sessions += 1
         for s in sets:
             ex = s.get("exercise", "unknown")
-            weight = s.get("weight_kg")
+            weight = s.get("weight_lb")
             reps = s.get("reps")
             if weight is not None and reps is not None:
                 if ex not in exercise_history:
@@ -223,7 +455,7 @@ def gym_insights(db: Database) -> str:
     for ex_name, history in sorted(exercise_history.items()):
         if len(history) < 2:
             latest = history[0]
-            lines.append(f"  {ex_name}: {latest['weight']}kg × {latest['reps']} ({latest['date']}) — need more data")
+            lines.append(f"  {ex_name}: {latest['weight']}lb × {latest['reps']} ({latest['date']}) — need more data")
             continue
 
         first = history[-1]
@@ -233,11 +465,11 @@ def gym_insights(db: Database) -> str:
 
         # Plateau detection
         if len(history) >= 3 and all(h["weight"] == history[0]["weight"] for h in history[:3]):
-            lines.append(f"  {ex_name}: {last['weight']}kg × {last['reps']} — ⚠️ PLATEAU (same weight 3+ sessions). Increase weight or reps.")
+            lines.append(f"  {ex_name}: {last['weight']}lb × {last['reps']} — ⚠️ PLATEAU (same weight 3+ sessions). Increase weight or reps.")
         elif weight_change > 0:
-            lines.append(f"  {ex_name}: {first['weight']}→{last['weight']}kg (+{weight_change}kg) | volume {volume_change_pct:+.0f}%")
+            lines.append(f"  {ex_name}: {first['weight']}→{last['weight']}lb (+{weight_change}lb) | volume {volume_change_pct:+.0f}%")
         else:
-            lines.append(f"  {ex_name}: {first['weight']}→{last['weight']}kg ({weight_change:+.0f}kg)")
+            lines.append(f"  {ex_name}: {first['weight']}→{last['weight']}lb ({weight_change:+.0f}lb)")
 
     return "\n".join(lines)
 
@@ -493,19 +725,29 @@ def sleep_quality_insights(db) -> str:
 
     # 7-day sleep trends
     if len(stages) >= 3:
-        avg_deep = sum((s.get("sleep_deep_min") or 0) for s in stages) / len(stages)
-        avg_total = sum((s.get("sleep_duration_min") or 0) for s in stages) / len(stages)
+        recorded_stages = [s for s in stages if s.get("sleep_duration_min") is not None]
+        avg_deep = (
+            sum((s.get("sleep_deep_min") or 0) for s in recorded_stages) / len(recorded_stages)
+            if recorded_stages else 0
+        )
+        avg_total = (
+            sum((s.get("sleep_duration_min") or 0) for s in recorded_stages) / len(recorded_stages)
+            if recorded_stages else 0
+        )
         avg_deep_pct = round(avg_deep / avg_total * 100) if avg_total > 0 else 0
-        avg_bb_charge = sum((s.get("bb_sleep_charge") or 0) for s in stages) / len(stages)
+        avg_bb_charge = (
+            sum((s.get("bb_sleep_charge") or 0) for s in recorded_stages) / len(recorded_stages)
+            if recorded_stages else 0
+        )
 
-        lines.append(f"7-day avg: deep {avg_deep:.0f}m ({avg_deep_pct}%) | total {avg_total:.0f}m | BB charge {avg_bb_charge:.0f}")
+        lines.append(f"7-day recorded avg: deep {avg_deep:.0f}m ({avg_deep_pct}%) | total {avg_total:.0f}m | BB charge {avg_bb_charge:.0f}")
 
         # Sleep debt
         target_min = 420  # 7 hours
-        debt_per_night = [(target_min - (s.get("sleep_duration_min") or 0)) for s in stages]
+        debt_per_night = [(target_min - s.get("sleep_duration_min")) for s in recorded_stages]
         total_debt = sum(max(0, d) for d in debt_per_night)
         if total_debt > 120:
-            lines.append(f"  ⚠️ Sleep debt: {total_debt:.0f}m ({total_debt/60:.1f}h) accumulated over {len(stages)} days")
+            lines.append(f"  ⚠️ Sleep debt: {total_debt:.0f}m ({total_debt/60:.1f}h) accumulated over {len(recorded_stages)} recorded nights")
 
     return "\n".join(lines)
 
@@ -626,7 +868,6 @@ def load_with_corrections(db) -> str:
     acwr = today.get("acwr_ratio") or 0
     status = today.get("training_status") or "?"
     balance = today.get("load_balance") or "?"
-    period_active = _is_period_active(today)
 
     lines = ["## Training Load (computed, basketball-corrected)"]
     lines.append(f"Acute: {acute:.0f} | Chronic: {chronic:.0f} | ACWR: {acwr:.2f} | Status: {status}")
@@ -643,12 +884,14 @@ def load_with_corrections(db) -> str:
     else:
         lines.append("  ⚪ ACWR < 0.8 — detraining zone. Increase volume if readiness allows.")
 
+    period_active = _is_period_active(today)
+
     # Load balance interpretation
     if balance and "SHORTAGE" in str(balance):
         if period_active:
             lines.append(
                 f"  ⚠️ {balance} — aerobic work is behind, but period is active: "
-                "defer swim; use walk, mobility, or easy bike instead"
+                "defer swim; use mobility, easy bike, or gentle gym instead"
             )
         else:
             lines.append(f"  ⚠️ {balance} — add more aerobic work (swim, easy run, cycling)")
@@ -689,7 +932,7 @@ def menstrual_constraint(db: Database, metrics: dict | None = None) -> str:
         "## Menstrual Constraint (computed — LLM MUST follow)",
         f"Period active ({day_text}).",
         "Hard constraint: do NOT recommend swimming today.",
-        "If aerobic/base work is needed, substitute walk, mobility, easy bike, or gentle gym; keep it comfort-based.",
+        "If aerobic/base work is needed, substitute mobility, easy bike, or gentle gym; keep it comfort-based.",
     ])
 
 
@@ -712,11 +955,11 @@ def concerns_summary(db) -> str:
 
 
 
-def weekly_gap_analysis(db) -> str:
+def weekly_gap_analysis(db, target_date: date | None = None) -> str:
     """Detect what's missing from this week's training and suggest what to fill."""
     from datetime import date, timedelta
 
-    today = date.today()
+    today = target_date or date.today()
     week_start = today - timedelta(days=today.weekday())  # Monday
     days_left = 6 - today.weekday()  # remaining days including today
 
@@ -735,12 +978,18 @@ def weekly_gap_analysis(db) -> str:
     has_basketball = "basketball" in types_done
     gym_count = types_done.count("strength")
     swim_count = types_done.count("swimming")
+    outdoor_count = sum(1 for activity_type in types_done if activity_type in OUTDOOR_SLOT_ACTIVITY_TYPES)
+    high_impact_recent = any(
+        activity_type in HIGH_IMPACT_ACTIVITY_TYPES and date.fromisoformat(activity_date) >= today - timedelta(days=1)
+        for activity_type, activity_date in zip(types_done, dates_done)
+    )
 
     # Weekly targets
     # Basketball: 2x (Wed/Fri, fixed)
     # Ski: 1-2x (weather-dependent, bonus)
     # Gym: 2x (fill available days, priority: back/shoulders + lower/core)
     # Swim: 1x minimum (Costa Rica prep, deadline May 2026)
+    # Outdoor/adventure: optional 1x (hike, tennis, cycle, camping-day hike)
 
     lines = ["## Weekly Gap Analysis (computed)"]
     lines.append(f"Done this week: {len(this_week)} sessions ({', '.join(types_done) if types_done else 'none'})")
@@ -752,9 +1001,14 @@ def weekly_gap_analysis(db) -> str:
         missing.append(f"Gym: need {needed} more (target 2x/week for body recomp)")
     if swim_count < 1:
         if period_active:
-            missing.append("Swim: deferred while period is active; use walk/mobility/easy bike for aerobic base")
+            missing.append("Swim: deferred while period is active; use mobility/easy bike/gentle gym for aerobic base")
         else:
             missing.append("Swim: need 1 (Costa Rica freestyle prep — 9 weeks out)")
+    if outdoor_count < 1:
+        if period_active:
+            missing.append("Outdoor/adventure: optional 1x (period-friendly easy hike/easy bike; tennis only if symptoms are low)")
+        else:
+            missing.append("Outdoor/adventure: optional 1x (hike, tennis, easy cycle, or camping-day hike)")
 
     if missing:
         lines.append("Missing this week:")
@@ -770,13 +1024,23 @@ def weekly_gap_analysis(db) -> str:
         dow_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
         suggestions = []
+        outdoor_suggested = outdoor_count >= 1
         for offset in range(days_left + 1):
             check_day = today + timedelta(days=offset)
             check_dow = check_day.weekday()
             check_date = check_day.isoformat()
+            planned_session = _planned_session_for_date(check_day)
+            planned_type = str((planned_session or {}).get("type") or "").lower()
+            planned_prescription = str((planned_session or {}).get("prescription") or "").lower()
 
             # Skip if already has activity today
             if check_date in dates_done and offset == 0:
+                continue
+            if planned_type == "basketball" and (
+                offset == 0
+                or "basketball only" in planned_prescription
+                or "no stacked" in planned_prescription
+            ):
                 continue
 
             if check_dow in (2, 4):  # Wed/Fri — basketball evening
@@ -784,9 +1048,15 @@ def weekly_gap_analysis(db) -> str:
                     suggestions.append(f"{dow_names[check_dow]} {check_date}: morning gym (basketball is evening)")
                 elif swim_count < 1 and not period_active:
                     suggestions.append(f"{dow_names[check_dow]} {check_date}: morning swim (basketball is evening)")
+                elif not outdoor_suggested:
+                    suggestions.append(f"{dow_names[check_dow]} {check_date}: easy bike or mobility only; keep legs fresh for basketball")
+                    outdoor_suggested = True
             elif check_dow == 6:  # Sunday — rest preferred
                 if swim_count < 1 and not period_active:
                     suggestions.append(f"Sun {check_date}: light swim (active recovery)")
+                elif not outdoor_suggested:
+                    suggestions.append(f"Sun {check_date}: outdoor recovery slot — easy hike/easy cycle")
+                    outdoor_suggested = True
             else:  # Mon/Tue/Thu/Sat — open
                 if gym_count < 2:
                     suggestions.append(f"{dow_names[check_dow]} {check_date}: gym")
@@ -794,6 +1064,14 @@ def weekly_gap_analysis(db) -> str:
                 elif swim_count < 1 and not period_active:
                     suggestions.append(f"{dow_names[check_dow]} {check_date}: swim")
                     swim_count += 1
+                elif not outdoor_suggested:
+                    if period_active:
+                        suggestions.append(f"{dow_names[check_dow]} {check_date}: period-friendly outdoor base — easy hike/easy bike")
+                    elif high_impact_recent:
+                        suggestions.append(f"{dow_names[check_dow]} {check_date}: easy hike/easy cycle; skip hard tennis after recent high-impact work")
+                    else:
+                        suggestions.append(f"{dow_names[check_dow]} {check_date}: outdoor slot — hike, tennis, easy cycle, or camping-day hike")
+                    outdoor_suggested = True
 
         if suggestions:
             lines.append("Suggested slots:")
@@ -805,10 +1083,537 @@ def weekly_gap_analysis(db) -> str:
     return "\n".join(lines)
 
 
+def systemic_strain_check(db, metrics: dict) -> tuple[str | None, list[str]]:
+    """Detect physiological stress signals from respiration/HRV/RHR/SpO2/BB vs
+    7-day baselines. Returns (severity, signal_descriptions).
+
+    Whoop-style detection without body-temperature (FR955 lacks the sensor).
+    Two plausible drivers produce the same signature: illness (infection,
+    immune response) or severe training stress (hard session + under-recovery).
+    Signals don't distinguish — the correct downstream move is the same:
+    train lighter or rest until vitals normalize.
+
+    Thresholds tuned so MODERATE+ flags are rare (target <10% of days).
+    """
+    history = db.get_recent_metrics(days=8) or []
+    if len(history) < 4:
+        return (None, [])
+
+    past = [m for m in history if m.get("date") != metrics.get("date")][:7]
+
+    def mean(values):
+        filtered = [v for v in values if v is not None]
+        return sum(filtered) / len(filtered) if filtered else None
+
+    resp_base = mean([m.get("respiration_avg") for m in past])
+    rhr_base = mean([m.get("resting_hr") for m in past])
+    bb_base = mean([m.get("body_battery_am") for m in past])
+    spo2_base = mean([m.get("spo2_avg") for m in past])
+    hrv_base = metrics.get("hrv_weekly_avg") or mean(
+        [m.get("hrv_last_night") for m in past]
+    )
+
+    resp = metrics.get("respiration_avg")
+    rhr = metrics.get("resting_hr")
+    hrv = metrics.get("hrv_last_night")
+    spo2 = metrics.get("spo2_avg")
+    bb_wake = metrics.get("bb_at_wake") or metrics.get("body_battery_am")
+
+    signals: list[str] = []
+
+    if resp is not None and resp_base and resp > resp_base + 1.5:
+        signals.append(
+            f"respiration {resp:.1f} vs 7d baseline {resp_base:.1f} (+{resp - resp_base:.1f})"
+        )
+    if hrv is not None and hrv_base and hrv < hrv_base * 0.85:
+        signals.append(
+            f"HRV {hrv:.0f} vs baseline {hrv_base:.0f} ({(hrv/hrv_base - 1)*100:+.0f}%)"
+        )
+    if rhr is not None and rhr_base and rhr > rhr_base + 5:
+        signals.append(
+            f"RHR {rhr} vs baseline {rhr_base:.0f} (+{rhr - rhr_base:.0f} bpm)"
+        )
+    if spo2 is not None and spo2_base and spo2 < spo2_base - 2:
+        signals.append(
+            f"SpO2 {spo2:.0f}% vs baseline {spo2_base:.0f}%"
+        )
+    if bb_wake is not None and bb_base and bb_wake < bb_base * 0.65:
+        signals.append(
+            f"BB at wake {bb_wake} vs baseline {bb_base:.0f} ({(bb_wake/bb_base - 1)*100:+.0f}%)"
+        )
+
+    if not signals:
+        return (None, [])
+    if len(signals) >= 3:
+        return ("HIGH", signals)
+    if len(signals) >= 2:
+        return ("MODERATE", signals)
+    # Single signal is noise; suppress from output.
+    return (None, [])
+
+
+def systemic_strain_block(db, metrics: dict) -> str:
+    severity, signals = systemic_strain_check(db, metrics)
+    if not signals:
+        return ""
+    lines = [f"## Systemic Strain Signal: {severity}"]
+    for s in signals:
+        lines.append(f"  - {s}")
+    lines.append(
+        "  → Multiple vitals diverged from baseline simultaneously. Two plausible "
+        "drivers: illness (immune response) or severe training stress (hard session "
+        "+ under-recovery)."
+    )
+    if severity == "HIGH":
+        lines.append(
+            "  → HIGH severity: training today MUST be rest/recovery regardless of "
+            "DECISION or muscle freshness. If no hard session in last 48h, consider early illness."
+        )
+    else:
+        lines.append(
+            "  → MODERATE: train lighter than DECISION suggests, or swap for recovery work. "
+            "If it persists another day, treat as HIGH."
+        )
+    return "\n".join(lines)
+
+
+def professional_coach_layer(db: Database, metrics: dict | None = None, target_date: date | None = None) -> str:
+    """Sports-science context layer: evidence, objectives, and guardrails for the LLM coach."""
+    current_metrics = metrics
+    if current_metrics is None:
+        recent_metrics = db.get_recent_metrics(days=1)
+        current_metrics = recent_metrics[0] if recent_metrics else None
+    if current_metrics is None:
+        return ""
+
+    fatigue = _compute_muscle_group_fatigue(db)
+    fresh_priority_groups = [
+        group for group in PRIORITY_STRENGTH_GROUPS
+        if fatigue.get(group, 0) < 35
+    ]
+    fatigued_groups = sorted([group for group, value in fatigue.items() if value >= 50])
+
+    sleep_min = current_metrics.get("sleep_duration_min") or 0
+    sleep_h = sleep_min / 60 if sleep_min else 0
+    sleep_debt_min = _sleep_debt_minutes(db)
+
+    hrv = current_metrics.get("hrv_last_night") or 0
+    hrv_baseline = current_metrics.get("hrv_weekly_avg") or hrv
+    hrv_delta_pct = ((hrv - hrv_baseline) / hrv_baseline * 100) if hrv_baseline > 0 else 0
+    bb_wake = (
+        current_metrics.get("bb_at_wake")
+        or current_metrics.get("body_battery_am")
+        or 0
+    )
+    acwr = current_metrics.get("acwr_ratio") or 0
+    readiness_level = current_metrics.get("training_readiness_level") or "UNKNOWN"
+    period_active = _is_period_active(current_metrics)
+    strain_severity, _strain_signals = systemic_strain_check(db, current_metrics)
+    planned_session = _planned_session_for_date(target_date)
+    planned_type = str((planned_session or {}).get("type") or "").lower()
+    planned_recovery = _is_recovery_plan_type(planned_type)
+    adaptive_override = _adaptive_plan_override(db, current_metrics, planned_session, target_date)
+
+    recent_activities = db.get_recent_activities(days=7)
+    high_impact_recent = any(
+        activity.get("type") in HIGH_IMPACT_ACTIVITY_TYPES
+        and date.fromisoformat(activity["date"]) >= date.today() - timedelta(days=2)
+        for activity in recent_activities
+    )
+    strength_sessions = sum(1 for activity in recent_activities if activity.get("type") == "strength")
+
+    recovery_red_flags = []
+    if strain_severity == "HIGH":
+        recovery_red_flags.append("systemic strain HIGH")
+    if sleep_h > 0 and sleep_h < 4:
+        recovery_red_flags.append(f"sleep {sleep_h:.1f}h < 4h")
+    if bb_wake > 0 and bb_wake < 20:
+        recovery_red_flags.append(f"BB at wake {bb_wake} < 20")
+    if hrv_delta_pct < -15:
+        recovery_red_flags.append(f"HRV {hrv_delta_pct:+.0f}% vs baseline")
+
+    load_constraints = []
+    if sleep_debt_min >= 300:
+        load_constraints.append(f"sleep debt {sleep_debt_min/60:.1f}h")
+    if hrv_delta_pct < 0:
+        load_constraints.append(f"HRV {hrv_delta_pct:+.0f}% vs baseline")
+    if bb_wake > 0 and bb_wake < 40:
+        load_constraints.append(f"BB at wake {bb_wake}")
+    if acwr > 1.1:
+        load_constraints.append(f"ACWR {acwr:.2f} elevated")
+    if high_impact_recent:
+        load_constraints.append("recent high-impact sport")
+    if planned_type == "basketball":
+        load_constraints.append("planned basketball today")
+
+    if recovery_red_flags:
+        training_intent = "Recovery-only constraint: protect adaptation and avoid strength loading."
+        planning_objective = "Select the lowest-stress recovery modality that still supports consistency."
+    elif planned_type == "basketball":
+        training_intent = "Basketball-first constraint: protect evening play; do not stack a separate gym session."
+        planning_objective = "Generate a basketball-first plan with warmup/support work only if it improves readiness."
+    elif planned_recovery:
+        training_intent = "Planned recovery/skill constraint: honor the weekly plan's recovery gate instead of filling the day with strength."
+        planning_objective = "Choose recovery or skill work that preserves the rotating microcycle for the next eligible training slot."
+    elif adaptive_override is not None:
+        training_intent = (
+            "Adaptive recovery/skill constraint: defer the planned strength slot because the last actual "
+            "session already loaded the same priority tissues."
+        )
+        planning_objective = "Choose the best recovery/skill option from the eligible modalities; do not copy this contract as final text."
+    elif acwr < 0.8 and readiness_level == "HIGH":
+        training_intent = "Rebuild consistency: add quality strength plus easy aerobic base without a load spike."
+        planning_objective = "Design a conservative build day that improves rhythm without creating a load spike."
+    elif load_constraints:
+        training_intent = "Controlled build: train useful patterns, but do not chase PRs or fatigue."
+        planning_objective = "Design a useful but capped session; make the cap obvious in user-facing language."
+    else:
+        training_intent = "Build day: progress the next priority pattern while keeping technique clean."
+        planning_objective = "Design the best professional plan for today from the evidence, goals, and constraints."
+
+    if recovery_red_flags:
+        target_groups = []
+        movement_patterns = [f"recovery menu ({HOME_MICRO_SESSION}; easy bike; gentle gym)"]
+    elif planned_type == "basketball":
+        target_groups = []
+        movement_patterns = [f"pre-basketball prep ({HOME_MICRO_SESSION}; light shooting warm-up if desired)"]
+    elif planned_recovery:
+        target_groups = []
+        movement_patterns = [
+            "planned recovery/skill menu (easy walk, swim technique, breathing/core-control micro work)",
+            "save lower-balance strength for the next eligible slot",
+        ]
+    elif adaptive_override is not None:
+        target_groups = []
+        movement_patterns = [
+            "swim technique or easy Zone 1-2 cardio",
+            f"core-control micro work ({HOME_MICRO_SESSION})",
+            "optional non-overlap gym technique only",
+        ]
+    else:
+        target_groups = fresh_priority_groups or [
+            group for group in PRIORITY_STRENGTH_GROUPS if group not in fatigued_groups
+        ]
+        if not target_groups:
+            target_groups = ["back", "core"]
+        movement_patterns = [
+            MOVEMENT_PATTERN_BY_GROUP[group]
+            for group in target_groups
+            if group in MOVEMENT_PATTERN_BY_GROUP
+        ]
+
+    hard_constraints = []
+    if period_active:
+        hard_constraints.append("No swim while period is active; aerobic substitute = mobility, easy bike, or gentle gym.")
+    if recovery_red_flags:
+        hard_constraints.append("No heavy lifting or HIIT until red flags clear.")
+    if adaptive_override is not None:
+        hard_constraints.append(
+            "Do not repeat overlapping strength groups from the last session: "
+            f"{', '.join(adaptive_override['overlapping_groups'])}."
+        )
+        hard_constraints.append("Weekly plan is a baseline; actual completed training plus recovery/load gates override it.")
+    if planned_recovery:
+        hard_constraints.append("Honor the planned recovery/skill day; do not turn it into a strength catch-up session.")
+    if high_impact_recent:
+        hard_constraints.append("Avoid hard tennis, plyometrics, and heavy quad volume after recent high-impact load.")
+    if planned_type == "basketball":
+        hard_constraints.append("No rescue lifting or stacked hard conditioning before basketball; avoid heavy hinges, heavy quad volume, HIIT, and PR attempts.")
+    if "quads" in fatigued_groups or high_impact_recent:
+        hard_constraints.append("Quad work is maintenance-only after recent high-impact load or quad fatigue; otherwise use controlled quad/single-leg exposure as part of lower-balance programming.")
+    hard_constraints.append("Sharp joint pain, dizziness, chest pain, or unusual shortness of breath = stop and downgrade.")
+
+    lines = [
+        "## Professional Sports Science Context (computed — facts and guardrails, not a template)",
+        f"Coach role: strength & conditioning programming for body recomp + athletic transfer.",
+        f"Weekly status: {strength_sessions}/2 strength sessions done; target is consistency, not random daily workouts.",
+        "Programming style: use a rotating weekly microcycle, not the same exercise checklist; choose movement patterns from the user's long-term plan and current constraints.",
+    ]
+    if planned_session is not None:
+        prescription = str(planned_session.get("prescription") or "").strip().replace("\n", " ")
+        if prescription:
+            lines.append(f"Today's baseline plan: {planned_type or 'unknown'} — {prescription}")
+        else:
+            lines.append(f"Today's baseline plan: {planned_type or 'unknown'}.")
+    lines.extend([
+        f"Decision frame: {training_intent}",
+        f"Coach objective: {planning_objective}",
+    ])
+
+    if load_constraints:
+        lines.append(f"Load modifiers: {', '.join(load_constraints)}.")
+    if adaptive_override is not None:
+        latest = adaptive_override["latest"]
+        lines.append(
+            "Adaptive override evidence: "
+            f"Trigger: {', '.join(adaptive_override['reasons'])}; "
+            f"last actual strength on {latest['date']} emphasized {', '.join(latest['groups'])}; "
+            f"planned {adaptive_override['planned_type']} overlaps {', '.join(adaptive_override['overlapping_groups'])}."
+        )
+        lines.append(f"Eligible modalities: {'; '.join(adaptive_override['eligible_modalities'])}.")
+    if recovery_red_flags:
+        lines.append(f"Red flags: {', '.join(recovery_red_flags)}.")
+    if target_groups:
+        lines.append(f"Priority body focus: {', '.join(target_groups)}.")
+    if movement_patterns:
+        lines.append(f"Eligible movement patterns: {'; '.join(movement_patterns)}.")
+
+    lines.extend([
+        "Progression rule: use last successful working weights; if sleep debt, HRV trend, period symptoms, or soreness are present, keep the same load or reduce 5-10%. Add reps/quality before adding weight.",
+        "Sport-transfer logic: posterior chain + glutes support basketball first step, hiking climbs, and snow/sport deceleration; upper back/shoulders offset desk posture and support pulling mechanics; controlled quad/single-leg work supports balanced athleticism when recovery allows.",
+        f"Hard constraints: {' '.join(hard_constraints)}",
+        "Feedback loop: after the session, capture completed exercises, loads, RPE, and any pain/symptom note; the next plan should adjust from actual completion, not from the planned workout.",
+    ])
+
+    return "\n".join(lines)
+
+
+def _normalized_exercise_name(exercise: object) -> str:
+    return str(exercise or "").strip().lower().replace(" ", "_").replace("-", "_")
+
+
+def _exercise_group_map(exercise: object) -> dict[str, float]:
+    normalized = _normalized_exercise_name(exercise)
+    for key, group_map in _MUSCLE_MAP_BY_EXERCISE.items():
+        if key in normalized:
+            return group_map
+    return {}
+
+
+def post_session_feedback_loop(db: Database) -> str:
+    """Turn the latest completed strength session into next-session programming rules."""
+    strength_activities = db.get_recent_activities(days=30, activity_type="strength")
+    if not strength_activities:
+        return "\n".join([
+            "## Post-Session Feedback Loop (computed — LLM MUST use this)",
+            "No recent strength session found. Start with conservative loads and treat the next session as baseline collection.",
+            "Feedback needed after next session: completed exercises, loads, RPE, and any pain/symptom note.",
+        ])
+
+    latest = strength_activities[0]
+    sets = db.get_gym_sets(latest["id"])
+    feedback = db.get_training_feedback(latest["id"])
+    if not sets:
+        return "\n".join([
+            "## Post-Session Feedback Loop (computed — LLM MUST use this)",
+            f"Last strength session: {latest.get('date')} ({latest.get('duration_min', '?')} min), but no set detail was captured.",
+            "Next-session rule: keep the plan conservative until exercise-level completion is available.",
+            "Feedback needed: completed exercises, loads, RPE, and any pain/symptom note.",
+        ])
+
+    ignored_keywords = ("unknown", "treadmill", "cardio")
+    strength_sets = [
+        set_row for set_row in sets
+        if not any(keyword in _normalized_exercise_name(set_row.get("exercise")) for keyword in ignored_keywords)
+        and (set_row.get("reps") or 0) > 0
+    ]
+    set_count = len(strength_sets)
+    rep_count = sum(set_row.get("reps") or 0 for set_row in strength_sets)
+    exercises = sorted({
+        str(set_row.get("exercise"))
+        for set_row in strength_sets
+        if set_row.get("exercise")
+    })
+    recorded_weights = [
+        set_row.get("weight_lb")
+        for set_row in strength_sets
+        if set_row.get("weight_lb") is not None and set_row.get("weight_lb") > 0
+    ]
+    weight_capture_rate = len(recorded_weights) / set_count if set_count > 0 else 0
+
+    group_load: dict[str, float] = {}
+    unmapped_exercises = set()
+    for set_row in strength_sets:
+        group_map = _exercise_group_map(set_row.get("exercise"))
+        if not group_map:
+            if set_row.get("exercise"):
+                unmapped_exercises.add(str(set_row.get("exercise")))
+            continue
+        for group, share in group_map.items():
+            group_load[group] = group_load.get(group, 0) + share
+
+    top_groups = [
+        group for group, _value in sorted(group_load.items(), key=lambda item: item[1], reverse=True)[:5]
+    ]
+
+    duration_min = latest.get("duration_min") or 0
+    training_load = latest.get("training_load") or 0
+    z4_sec = latest.get("hr_zone4_sec") or 0
+    z5_sec = latest.get("hr_zone5_sec") or 0
+    hard_hr_min = (z4_sec + z5_sec) / 60
+
+    volume_flags = []
+    if duration_min >= 75:
+        volume_flags.append(f"{duration_min:.0f} min session")
+    if set_count >= 20:
+        volume_flags.append(f"{set_count} strength sets")
+    if training_load >= 100:
+        volume_flags.append(f"load {training_load:.0f}")
+    if hard_hr_min >= 8:
+        volume_flags.append(f"{hard_hr_min:.0f} min Z4/Z5")
+
+    if volume_flags:
+        progression_decision = "Do not chase progression next strength session; consolidate technique and keep volume capped."
+        next_adjustment = "Next strength dose: 30-40 min, 4-5 movements, 2-3 work sets each, stop 2-3 reps in reserve."
+    elif weight_capture_rate < 0.5:
+        progression_decision = "Load progression is not auditable because weights are mostly missing; progress by clean reps/RPE only."
+        next_adjustment = "Repeat the same main patterns and record weights or RPE before increasing load."
+    else:
+        progression_decision = "Progress only exercises completed cleanly at target RPE; add 1-2 reps before adding weight."
+        next_adjustment = "Keep the same movement pattern and add a small progression only where completion quality was strong."
+
+    if feedback is not None:
+        pain_level = feedback.get("pain_level")
+        rpe = feedback.get("rpe")
+        if pain_level is not None and pain_level >= 4:
+            progression_decision = "Pain feedback overrides progression; deload the affected pattern and use pain-free alternatives."
+            next_adjustment = "Next strength dose: keep intensity easy, avoid the painful pattern, and prioritize mobility/stability."
+        elif rpe is not None and rpe >= 8:
+            progression_decision = "High RPE feedback: hold load steady next session and progress only if reps are cleaner."
+            next_adjustment = "Next strength dose: repeat main patterns, cap at RPE 7, and stop before form breaks."
+
+    lines = [
+        "## Post-Session Feedback Loop (computed — LLM MUST use this)",
+        f"Last strength session: {latest.get('date')} | {duration_min:.0f} min | {set_count} strength sets | {rep_count} reps | load {training_load:.0f}.",
+    ]
+    if top_groups:
+        lines.append(f"Actual emphasis: {', '.join(top_groups)}.")
+    lines.append(
+        f"Weight capture: {len(recorded_weights)}/{set_count} sets with load recorded "
+        f"({weight_capture_rate*100:.0f}%)."
+    )
+    if volume_flags:
+        lines.append(f"Volume/strain flags: {', '.join(volume_flags)}.")
+    if feedback is not None:
+        feedback_bits = []
+        if feedback.get("rpe") is not None:
+            feedback_bits.append(f"RPE {feedback.get('rpe')}")
+        if feedback.get("pain_level") is not None:
+            area = f" {feedback.get('pain_area')}" if feedback.get("pain_area") else ""
+            feedback_bits.append(f"pain{area} {feedback.get('pain_level')}/10")
+        if feedback.get("menstrual_symptoms"):
+            feedback_bits.append(f"cycle symptoms: {feedback.get('menstrual_symptoms')}")
+        if feedback.get("notes"):
+            feedback_bits.append(f"notes: {feedback.get('notes')}")
+        lines.append(f"User feedback captured: {'; '.join(feedback_bits) if feedback_bits else 'yes'}.")
+    lines.append(f"Progression decision: {progression_decision}")
+    lines.append(f"Next-session adjustment: {next_adjustment}")
+    if unmapped_exercises:
+        lines.append(f"Mapping gap: review these exercises for muscle-group mapping: {', '.join(sorted(unmapped_exercises)[:6])}.")
+    lines.append("Feedback request after next workout: ask for actual RPE and any ankle/knee/low-back pain if Garmin lacks it.")
+
+    return "\n".join(lines)
+
+
+def weekly_programming_layer(db: Database) -> str:
+    """One-week S&C programming frame: targets, current gaps, and recovery budget."""
+    activities = db.get_recent_activities(days=7)
+    metrics = db.get_daily_metrics()
+    period_active = _is_period_active(metrics)
+    types_done = [activity.get("type") for activity in activities]
+    strength_count = types_done.count("strength")
+    swim_count = types_done.count("swimming")
+    basketball_count = types_done.count("basketball")
+    outdoor_count = sum(1 for activity_type in types_done if activity_type in OUTDOOR_SLOT_ACTIVITY_TYPES)
+    total_load = sum(activity.get("training_load") or 0 for activity in activities)
+
+    next_priorities = []
+    if strength_count < 2:
+        next_priorities.append(f"strength {strength_count}/2")
+    if swim_count < 1:
+        next_priorities.append("aerobic base deferred to mobility/easy bike/gentle gym while period active" if period_active else "swim/aerobic base 0/1")
+    if outdoor_count < 1:
+        next_priorities.append("outdoor/adventure optional 0/1")
+
+    if not next_priorities:
+        next_priorities.append("weekly minimums covered; bias recovery or skill quality")
+
+    lines = [
+        "## Weekly Programming Layer (computed — LLM MUST use this)",
+        f"7-day load: {total_load:.0f} | sessions: {len(activities)} | strength {strength_count}/2 | swim {swim_count}/1 | basketball {basketball_count} | outdoor {outdoor_count}/1 optional.",
+        f"Next priorities: {', '.join(next_priorities)}.",
+        "Programming rule: protect 2 quality strength exposures per week using rotating emphases (upper pull/shoulder, lower balance with posterior chain plus controlled quad, optional athletic micro); add aerobic/base work only when it does not compromise recovery or period constraints.",
+        "Deload trigger: if red flags, pain feedback, or high-volume strength appear, preserve frequency but reduce volume/intensity before adding sessions.",
+    ]
+
+    return "\n".join(lines)
+
+
+def exercise_progression_layer(db: Database) -> str:
+    """Exercise-level progression rules from recent set history."""
+    strength_activities = db.get_recent_activities(days=45, activity_type="strength")
+    if not strength_activities:
+        return "\n".join([
+            "## Exercise Progression Layer (computed — LLM MUST use this)",
+            "No recent strength history. Treat the next session as baseline collection.",
+        ])
+
+    exercise_sets: dict[str, list[dict[str, Any]]] = {}
+    for activity in strength_activities:
+        for set_row in db.get_gym_sets(activity["id"]):
+            exercise = str(set_row.get("exercise") or "").strip()
+            reps = set_row.get("reps")
+            if exercise == "" or reps is None or reps <= 0:
+                continue
+            exercise_sets.setdefault(exercise, []).append({
+                "date": activity.get("date"),
+                "reps": reps,
+                "weight_lb": set_row.get("weight_lb"),
+                "source": set_row.get("source") or "garmin",
+            })
+
+    priority_exercises = [
+        "Lat Pulldown",
+        "Seated Cable Row",
+        "Romanian Deadlift",
+        "Barbell Hip Thrust On Floor",
+        "Face Pull",
+        "Lateral Raise",
+        "Leg Curl",
+        "Leg Press",
+    ]
+
+    lines = ["## Exercise Progression Layer (computed — LLM MUST use this)"]
+    for exercise in priority_exercises:
+        history = exercise_sets.get(exercise, [])
+        if not history:
+            continue
+        weighted = [
+            set_row for set_row in history
+            if set_row.get("weight_lb") is not None and set_row.get("weight_lb") > 0
+        ]
+        recent_reps = [set_row.get("reps") for set_row in history[:3] if set_row.get("reps") is not None]
+        if len(weighted) < 2:
+            lines.append(
+                f"- {exercise}: progression not auditable yet ({len(weighted)}/{len(history)} sets have load). Repeat clean reps and capture weight/RPE."
+            )
+            continue
+        latest = weighted[0]
+        older = weighted[-1]
+        weight_delta = latest["weight_lb"] - older["weight_lb"]
+        rep_text = f", recent reps {recent_reps}" if recent_reps else ""
+        if weight_delta > 0:
+            lines.append(f"- {exercise}: load trending up {older['weight_lb']}→{latest['weight_lb']}lb{rep_text}; hold if RPE >=8, otherwise add reps before another load jump.")
+        elif weight_delta < 0:
+            lines.append(f"- {exercise}: load reduced {older['weight_lb']}→{latest['weight_lb']}lb{rep_text}; rebuild with clean reps before adding weight.")
+        else:
+            lines.append(f"- {exercise}: stable at {latest['weight_lb']}lb{rep_text}; add 1-2 reps first, then a small load increase if quality is solid.")
+
+    if len(lines) == 1:
+        lines.append("Recent exercises exist, but none of the priority movements have auditable load history yet. Use conservative repeat work and capture loads/RPE.")
+
+    return "\n".join(lines)
+
+
 def daily_summary(db: Database, metrics: dict | None = None) -> str:
     parts = [
         decision_logic(db, metrics) if metrics else None,
+        systemic_strain_block(db, metrics) if metrics else None,
         menstrual_constraint(db, metrics),
+        professional_coach_layer(db, metrics),
+        post_session_feedback_loop(db),
+        weekly_programming_layer(db),
+        exercise_progression_layer(db),
         readiness_attribution(db),
         recovery_insights(db),
         sleep_quality_insights(db),
@@ -1045,10 +1850,13 @@ _MUSCLE_MAP_BY_EXERCISE = {
     "bench_press": {"chest": 0.6, "shoulders": 0.3, "core": 0.1},
     "shoulder_press": {"shoulders": 0.8, "core": 0.2},
     "overhead_press": {"shoulders": 0.8, "core": 0.2},
+    "lateral_raise": {"shoulders": 0.9, "core": 0.1},
+    "triceps": {"arms": 1.0},
     # core
     "plank": {"core": 1.0},
     "pallof": {"core": 1.0},
     "ab_crunch": {"core": 1.0},
+    "leg_raise": {"core": 1.0},
 }
 
 
@@ -1303,10 +2111,10 @@ def _hrv_rising_streak(db: Database) -> int:
     return streak
 
 
-def decision_logic(db: Database, metrics: dict) -> str:
+def decision_logic(db: Database, metrics: dict, target_date: date | None = None) -> str:
     """
-    Pre-computed decision: tells LLM which output format to use and what data to plug in.
-    LLM reads this section and follows it — no need for it to infer format.
+    Pre-computed decision contract: facts, risk class, and training guardrails.
+    The LLM should generate the final coaching plan from this, not copy it.
     """
     fatigue = _compute_muscle_group_fatigue(db)
     fresh_groups = sorted([g for g, v in fatigue.items() if v < 20])
@@ -1325,11 +2133,38 @@ def decision_logic(db: Database, metrics: dict) -> str:
     acwr = metrics.get("acwr_ratio") or 0
     period_active = _is_period_active(metrics)
     period_day = metrics.get("menstrual_day_of_cycle")
+    planned_session = _planned_session_for_date(target_date)
+    planned_type = str((planned_session or {}).get("type") or "").lower()
+    planned_recovery = _is_recovery_plan_type(planned_type)
+    adaptive_override = _adaptive_plan_override(db, metrics, planned_session, target_date)
+
+    # Sleep debt over last 7 recorded sleep nights (target 7h/night). A single
+    # good night can hide chronic deficit; missing Garmin sleep data is unknown,
+    # not zero sleep.
+    sleep_debt_min = _sleep_debt_minutes(db)
+    sleep_stressed = sleep_h > 0 and sleep_h < 6 and sleep_debt_min > 300
+
+    raw_level = metrics.get("training_readiness_level") or ""
+    effective_level = raw_level
+    level_note = ""
+    if raw_level == "HIGH" and sleep_stressed:
+        effective_level = "MODERATE"
+        level_note = (
+            f" (downgraded from HIGH — sleep {sleep_h:.1f}h and "
+            f"7-day debt {sleep_debt_min/60:.1f}h)"
+        )
+
+    strain_severity, strain_signals = systemic_strain_check(db, metrics)
 
     decision = None
     reason = []
 
-    if sleep_h > 0 and sleep_h < 4:
+    if strain_severity == "HIGH":
+        decision = "SINGLE_REST"
+        reason.append(
+            f"systemic strain HIGH ({len(strain_signals)} vitals off baseline — see Strain block)"
+        )
+    elif sleep_h > 0 and sleep_h < 4:
         decision = "SINGLE_REST"
         reason.append(f"sleep {sleep_h:.1f}h < 4h (hard threshold)")
     elif stress > 80:
@@ -1344,42 +2179,83 @@ def decision_logic(db: Database, metrics: dict) -> str:
     elif hrv_delta_pct < -15:
         decision = "SINGLE_REST"
         reason.append(f"HRV {hrv_delta_pct:+.0f}% vs baseline (deep CNS hit)")
-    elif hrv_delta_pct >= 15 and hrv_rising >= 2 and fresh_groups:
+    elif planned_type == "basketball":
+        decision = "SCHEDULED_BASKETBALL"
+        reason.append("weekly plan schedules basketball today — do not stack rescue lifting")
+        if sleep_stressed:
+            reason.append(f"sleep debt {sleep_debt_min/60:.1f}h + sleep {sleep_h:.1f}h — cap intensity if energy drops")
+        if hrv_delta_pct < 0:
+            reason.append(f"HRV {hrv_delta_pct:+.0f}% vs baseline")
+    elif planned_recovery:
+        decision = "SINGLE_REST"
+        reason.append(f"weekly plan schedules {planned_type} today — preserve recovery/skill instead of strength catch-up")
+        if acwr > 1.3:
+            reason.append(f"ACWR {acwr:.2f} > 1.30")
+    elif adaptive_override is not None:
+        decision = "SINGLE_REST"
+        latest = adaptive_override["latest"]
+        reason.append(
+            "adaptive recovery override: weekly strength template loses to actual completed training"
+        )
+        reason.append(
+            f"last strength {latest['date']} emphasized {', '.join(latest['groups'])}"
+        )
+        reason.append(
+            f"planned {adaptive_override['planned_type']} overlaps {', '.join(adaptive_override['overlapping_groups'])}"
+        )
+        reason.extend(adaptive_override["reasons"])
+    elif hrv_delta_pct >= 15 and hrv_rising >= 2 and fresh_groups and not sleep_stressed:
         decision = "TWO_OPTION"
         reason.append(f"HRV {hrv_delta_pct:+.0f}% rising {hrv_rising}d — CNS rebound")
         reason.append(f"fresh groups available: {', '.join(fresh_groups)}")
     elif fresh_groups:
         decision = "SINGLE_LIGHT"
         reason.append(f"fresh groups: {', '.join(fresh_groups)}")
-        reason.append(f"HRV {hrv_delta_pct:+.0f}% (neutral, not rebounding)")
+        if sleep_stressed:
+            reason.append(
+                f"sleep debt {sleep_debt_min/60:.1f}h + sleep {sleep_h:.1f}h — "
+                f"LIGHT capped (TWO_OPTION blocked even with HRV rebound)"
+            )
+        else:
+            reason.append(f"HRV {hrv_delta_pct:+.0f}% (neutral, not rebounding)")
     else:
         decision = "SINGLE_REST"
         reason.append("no fresh groups + HRV not rebounding")
 
     lines = [
-        "## Today's Decision (computed — LLM MUST follow this)",
+        "## Today's Training Decision Contract (computed — facts and guardrails, not final copy)",
         f"DECISION: {decision}",
+        f"  Effective readiness level: {effective_level}{level_note}",
         f"  Reason: {'; '.join(reason)}",
     ]
 
     if decision == "TWO_OPTION":
-        lines.append(f"  Fresh groups (target for Option A): {', '.join(fresh_groups)}")
-        lines.append(f"  Fatigued groups (AVOID): {', '.join(fatigued_groups) or 'none'}")
-        lines.append(f"  Suggested volume cap: 25-35 min, RPE 5-6, 2 sets per exercise")
+        lines.append(f"  Planning envelope: strength or recovery option may be generated; target fresh groups {', '.join(fresh_groups)}.")
+        lines.append(f"  Forbidden/avoid: fatigued groups {', '.join(fatigued_groups) or 'none'}, PR chasing, high fatigue.")
+        lines.append("  Safety cap: keep strength conservative and provide a concrete switch-to-recovery condition.")
     elif decision == "SINGLE_LIGHT":
-        lines.append(f"  Target muscle groups: {', '.join(fresh_groups)}")
-        lines.append(f"  Avoid: {', '.join(fatigued_groups) or 'none'}")
-        lines.append(f"  Suggested volume cap: 30-40 min, RPE 6-7")
+        lines.append(f"  Planning envelope: strength is allowed only for fresh groups {', '.join(fresh_groups)}.")
+        lines.append(f"  Forbidden/avoid: fatigued groups {', '.join(fatigued_groups) or 'none'}, PR chasing, high fatigue.")
+        lines.append("  Safety cap: keep volume and intensity capped; exact session design is the coach's job.")
+    elif decision == "SCHEDULED_BASKETBALL":
+        lines.append("  Planning envelope: basketball-first; generate support work only if it improves the basketball session.")
+        lines.append("  Forbidden/avoid: separate gym session, rescue lifting, heavy hinge/RDL/hip thrust, HIIT, heavy quad volume, extra conditioning.")
+        lines.append("  Safety cap: if warmup/energy is poor, bias skills or shorten runs.")
     else:
         if period_active:
-            lines.append("  Output a single recovery/rest recommendation (walk/mobility/easy bike; do NOT recommend swim during period).")
+            lines.append("  Planning envelope: recovery-only; choose from mobility, easy bike, or gentle gym.")
+            lines.append("  Forbidden/avoid: swim during period, strength work, HIIT, heavy volume.")
         else:
-            lines.append(f"  Output a single recovery/rest recommendation (swim/walk/mobility).")
-        lines.append(f"  Do NOT recommend strength work.")
+            if adaptive_override is not None or planned_recovery:
+                lines.append("  Planning envelope: recovery/skill only; eligible options include swim technique, easy cardio, core-control micro work, or non-overlap gym technique if justified.")
+                lines.append("  Forbidden/avoid: planned strength catch-up, overlapping strength groups, PR chasing, HIIT, heavy volume.")
+            else:
+                lines.append("  Planning envelope: recovery-only; choose a low-load modality that fits the rest of the evidence.")
+                lines.append("  Forbidden/avoid: strength work, HIIT, heavy volume.")
 
     if period_active:
         day_text = f"day {period_day}" if period_day is not None else "day unknown"
-        lines.append(f"  Period constraint: active ({day_text}) — DO NOT recommend swim; use walk/mobility/easy bike for aerobic work.")
+        lines.append(f"  Period constraint: active ({day_text}) — DO NOT recommend swim; use mobility/easy bike/gentle gym for aerobic work.")
 
     lines.append(
         f"\n  Signals used: HRV {hrv} (baseline {hrv_baseline}, {hrv_delta_pct:+.0f}%, rising {hrv_rising}d), "

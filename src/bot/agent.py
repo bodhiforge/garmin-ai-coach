@@ -160,17 +160,22 @@ def inject_context(ctx: RunContext[CoachDeps]) -> str:
 def generate_plan(ctx: RunContext[CoachDeps], focus: str = "") -> str:
     """Generate a workout plan for today. Use when the user asks what to train, wants a plan, or asks for exercise suggestions."""
     ctx.deps.sync.sync_daily_metrics()
+    ctx.deps.sync.sync_activities()
+    ctx.deps.sync.refresh_recent_gym_sets(days=14)
     return ctx.deps.coach.workout_plan(focus)
 
 
 @coach_agent.tool
 def push_workout(ctx: RunContext[CoachDeps], focus: str = "") -> str:
     """Generate a STRENGTH TRAINING workout preview for Garmin upload. Shows the plan first — user must confirm before upload. Only for strength/gym workouts."""
+    ctx.deps.sync.sync_daily_metrics()
+    ctx.deps.sync.sync_activities()
+    ctx.deps.sync.refresh_recent_gym_sets(days=14)
+
     non_strength = ["stretch", "yoga", "mobility", "cardio", "recovery", "warm up", "cool down"]
     if any(kw in focus.lower() for kw in non_strength):
         return f"Can't push '{focus}' to Garmin — only strength workouts are supported. Here's a text plan instead:\n\n" + ctx.deps.coach.workout_plan(focus)
 
-    ctx.deps.sync.sync_daily_metrics()
     plan = ctx.deps.coach.workout_plan_structured(focus)
     if plan is None:
         return "Failed to generate structured plan."
@@ -258,10 +263,112 @@ def sync_data(ctx: RunContext[CoachDeps]) -> str:
     """Sync latest data from Garmin Connect."""
     metrics = ctx.deps.sync.sync_daily_metrics()
     new = ctx.deps.sync.sync_activities()
+    refreshed_sets = ctx.deps.sync.refresh_recent_gym_sets(days=14)
     msg = f"Synced. RHR: {metrics.get('resting_hr')} | HRV: {metrics.get('hrv_last_night')}ms"
     if new:
         msg += f"\n{len(new)} new activities"
+    if refreshed_sets > 0:
+        msg += f"\nRefreshed edited sets for {refreshed_sets} recent strength activities"
     return msg
+
+
+@coach_agent.tool
+def record_manual_strength_sets(
+    ctx: RunContext[CoachDeps],
+    entries_json: str,
+    activity_date: str = "",
+    note: str = "",
+) -> str:
+    """Record manually supplied strength sets that the Garmin watch missed. Use when the user says they want to supplement/correct a recent gym session. entries_json must be a JSON array of objects with exercise, sets, reps, and optional weight_lb."""
+    ctx.deps.sync.sync_activities()
+    ctx.deps.sync.refresh_recent_gym_sets(days=14)
+
+    try:
+        entries = json.loads(entries_json)
+    except json.JSONDecodeError:
+        return "Could not parse the manual set data. Please provide exercise, sets, reps, and optional weight."
+
+    if not isinstance(entries, list):
+        return "Manual set data must be a JSON array."
+
+    strength_activities = ctx.deps.sync.db.get_recent_activities(days=14, activity_type="strength")
+    if activity_date:
+        strength_activities = [
+            activity for activity in strength_activities
+            if activity.get("date") == activity_date
+        ]
+    if not strength_activities:
+        return "No recent strength activity found to attach those manual sets to."
+
+    activity = strength_activities[0]
+    normalized_entries = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        exercise = str(entry.get("exercise") or "").strip()
+        if exercise == "":
+            continue
+        weight = entry.get("weight_lb")
+        if weight is None:
+            weight = entry.get("weight")
+        normalized_entries.append({
+            "exercise": exercise,
+            "sets": int(entry.get("sets") or entry.get("set_count") or 1),
+            "reps": int(entry["reps"]) if entry.get("reps") is not None else None,
+            "weight_lb": float(weight) if weight is not None else None,
+            "note": entry.get("note"),
+        })
+
+    inserted = ctx.deps.sync.db.insert_manual_gym_sets(
+        activity["id"],
+        normalized_entries,
+        note=note or None,
+    )
+    if inserted == 0:
+        return "No valid manual strength sets were recorded."
+
+    return (
+        f"Recorded {inserted} manual exercise entr{'y' if inserted == 1 else 'ies'} "
+        f"for {activity.get('date')} strength session. These will be merged into future coach analysis."
+    )
+
+
+@coach_agent.tool
+def record_training_feedback(
+    ctx: RunContext[CoachDeps],
+    activity_date: str = "",
+    rpe: float | None = None,
+    pain_area: str = "",
+    pain_level: int | None = None,
+    menstrual_symptoms: str = "",
+    notes: str = "",
+) -> str:
+    """Record structured post-workout feedback such as RPE, pain area/level, cycle symptoms, or notes. Use after the user answers a training follow-up."""
+    ctx.deps.sync.sync_activities()
+    ctx.deps.sync.refresh_recent_gym_sets(days=14)
+
+    strength_activities = ctx.deps.sync.db.get_recent_activities(days=14, activity_type="strength")
+    if activity_date:
+        strength_activities = [
+            activity for activity in strength_activities
+            if activity.get("date") == activity_date
+        ]
+    if not strength_activities:
+        return "No recent strength activity found to attach that feedback to."
+
+    activity = strength_activities[0]
+    ctx.deps.sync.db.insert_training_feedback(
+        activity["id"],
+        rpe=rpe,
+        pain_area=pain_area or None,
+        pain_level=pain_level,
+        menstrual_symptoms=menstrual_symptoms or None,
+        notes=notes or None,
+    )
+    return (
+        f"Recorded feedback for {activity.get('date')} strength session. "
+        "I will use it in the next progression decision."
+    )
 
 
 @coach_agent.tool

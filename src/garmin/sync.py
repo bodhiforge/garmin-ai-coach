@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -186,15 +186,66 @@ class GarminSync:
         logger.info("Synced %d new activities", len(new_activities))
         return new_activities
 
+    def refresh_recent_gym_sets(self, days: int = 14) -> int:
+        """Re-fetch recent strength sets from Garmin Connect after post-workout edits.
+
+        Garmin watch capture is only a first pass. Exercise names, reps, and
+        weights may be corrected manually in Garmin Connect hours or days later.
+        The API endpoint is canonical for those edited sets, so refresh existing
+        strength activities before generating coach decisions.
+        """
+        cutoff = (date.today() - timedelta(days=days)).isoformat()
+        with self.db._connection() as conn:
+            rows = conn.execute(
+                """SELECT id FROM activities
+                   WHERE type = 'strength' AND date >= ?
+                   ORDER BY date DESC""",
+                (cutoff,),
+            ).fetchall()
+
+        refreshed = 0
+        for row in rows:
+            activity_id = row["id"]
+            try:
+                sets = self.client.get_exercise_sets(activity_id)
+            except Exception as exc:
+                logger.warning("Failed to refresh gym sets for %s: %s", activity_id, exc)
+                continue
+
+            if not sets:
+                continue
+
+            with self.db._connection() as conn:
+                conn.execute("DELETE FROM gym_sets WHERE activity_id = ?", (activity_id,))
+            self.db.insert_gym_sets(activity_id, sets)
+            refreshed += 1
+
+        if refreshed > 0:
+            logger.info(
+                "Refreshed edited Garmin strength sets for %d activity(s) in the last %d days",
+                refreshed,
+                days,
+            )
+        return refreshed
+
     def _parse_and_store_fit(
         self, activity_id: str, activity_type: str, fit_path: Path
     ) -> None:
         try:
             if activity_type == "strength":
-                sets = parse_gym_session(fit_path)
+                # Prefer Garmin Connect API: it has post-workout weight and
+                # exercise-name edits that FIT files never see.
+                sets = self.client.get_exercise_sets(activity_id)
+                source = "API"
+                if not sets:
+                    sets = parse_gym_session(fit_path)
+                    source = "FIT"
                 if sets:
                     self.db.insert_gym_sets(activity_id, sets)
-                    logger.info("Parsed %d gym sets for activity %s", len(sets), activity_id)
+                    logger.info(
+                        "Stored %d gym sets for activity %s (source: %s)",
+                        len(sets), activity_id, source,
+                    )
 
             elif activity_type == "skiing":
                 runs = parse_ski_session(fit_path)

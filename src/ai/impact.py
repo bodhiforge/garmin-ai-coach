@@ -197,7 +197,7 @@ def _gym_section(db: Database, gym_sessions: list[dict], lines: list[str]) -> No
         sets = db.get_gym_sets(a["id"])
         for s in (sets or []):
             ex = s.get("exercise", "unknown")
-            weight = s.get("weight_kg", 0) or 0
+            weight = s.get("weight_lb", 0) or 0
             if weight > 0:
                 if ex not in exercise_data:
                     exercise_data[ex] = []
@@ -213,8 +213,8 @@ def _gym_section(db: Database, gym_sessions: list[dict], lines: list[str]) -> No
         change = last_max - first_max
         name = ex.replace("_", " ").title()
         if change > 0:
-            lines.append(f"  {name}: {first_max:.0f} → {last_max:.0f} kg (+{change:.0f})")
+            lines.append(f"  {name}: {first_max:.0f} → {last_max:.0f} lb (+{change:.0f})")
         elif change < 0:
-            lines.append(f"  {name}: {first_max:.0f} → {last_max:.0f} kg ({change:.0f})")
+            lines.append(f"  {name}: {first_max:.0f} → {last_max:.0f} lb ({change:.0f})")
         else:
-            lines.append(f"  {name}: {last_max:.0f} kg (no change)")
+            lines.append(f"  {name}: {last_max:.0f} lb (no change)")

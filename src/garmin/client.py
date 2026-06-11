@@ -22,6 +22,10 @@ GARTH_HOME = Path.home() / ".garth"
 ACTIVITY_TYPE_MAP = {
     "running": "running",
     "cycling": "cycling",
+    "road_biking": "cycling",
+    "gravel_cycling": "cycling",
+    "mountain_biking": "cycling",
+    "indoor_cycling": "cycling",
     "strength_training": "strength",
     "resort_skiing_snowboarding": "skiing",
     "resort_snowboarding": "skiing",
@@ -30,6 +34,11 @@ ACTIVITY_TYPE_MAP = {
     "hiking": "hiking",
     "walking": "walking",
     "swimming": "swimming",
+    "lap_swimming": "swimming",
+    "open_water_swimming": "swimming",
+    "tennis": "tennis",
+    "surfing": "surfing",
+    "surfing_v2": "surfing",
     "yoga": "yoga",
 }
 
@@ -311,6 +320,71 @@ class GarminClient:
             return zones if zones else None
         except Exception as e:
             logger.debug("HR zones not available for %s: %s", activity_id, e)
+            return None
+
+    def get_exercise_sets(self, activity_id: str) -> list[dict[str, Any]] | None:
+        """
+        Fetch per-set exercise data (name, weight, reps) for a strength activity.
+        Combines Garmin's live watch detection with any post-workout edits made
+        in Garmin Connect — this is the canonical source for sets.
+
+        Weight comes from the API in grams; we convert to kg.
+        Exercise names arrive UPPER_SNAKE_CASE (e.g. LAT_PULLDOWN); we humanize.
+        REST frames are skipped but their duration populates the preceding set's
+        rest_duration_sec.
+        """
+        try:
+            data = self.client.get_activity_exercise_sets(str(activity_id))
+            if not data or not data.get("exerciseSets"):
+                return None
+
+            raw_sets = data.get("exerciseSets") or []
+            sets: list[dict[str, Any]] = []
+            pending_rest_for: dict[str, Any] | None = None
+
+            for raw in raw_sets:
+                set_type = (raw.get("setType") or "").upper()
+                duration = raw.get("duration")
+
+                if set_type == "REST":
+                    if pending_rest_for is not None and duration is not None:
+                        pending_rest_for["rest_duration_sec"] = int(round(float(duration)))
+                        pending_rest_for = None
+                    continue
+
+                if set_type != "ACTIVE":
+                    continue
+
+                exercises = raw.get("exercises") or []
+                exercise_name = None
+                if exercises:
+                    name = exercises[0].get("name") or exercises[0].get("category")
+                    if name:
+                        exercise_name = str(name).replace("_", " ").title()
+
+                weight_g = raw.get("weight")
+                weight_lb = (
+                    round(float(weight_g) / 453.59237, 2)
+                    if weight_g not in (None, 0, 0.0)
+                    else None
+                )
+
+                reps = raw.get("repetitionCount")
+                set_data: dict[str, Any] = {
+                    "set_number": len(sets) + 1,
+                    "exercise": exercise_name,
+                    "reps": int(reps) if reps is not None else None,
+                    "weight_lb": weight_lb,
+                    "peak_hr": None,
+                    "recovery_hr": None,
+                    "rest_duration_sec": None,
+                }
+                sets.append(set_data)
+                pending_rest_for = set_data
+
+            return sets if sets else None
+        except Exception as e:
+            logger.debug("Exercise sets not available for %s: %s", activity_id, e)
             return None
 
     def download_fit_file(self, activity_id: str, output_dir: Path) -> Path | None:

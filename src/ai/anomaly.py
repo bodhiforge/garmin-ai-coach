@@ -123,7 +123,7 @@ def _activity_anomalies(db: Database) -> list[dict]:
         for a in gym:
             sets = db.get_gym_sets(a["id"])
             if sets:
-                vol = sum((s.get("weight_kg", 0) or 0) * (s.get("reps", 0) or 0) for s in sets)
+                vol = sum((s.get("weight_lb", 0) or 0) * (s.get("reps", 0) or 0) for s in sets)
                 if vol > 0:
                     session_volumes.append((a["date"], vol))
 

@@ -9,6 +9,12 @@ from typing import Any
 from openai import OpenAI
 
 from ..db.models import Database
+from .insights import (
+    exercise_progression_layer,
+    post_session_feedback_loop,
+    professional_coach_layer,
+    weekly_programming_layer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -178,11 +184,12 @@ class AICoach:
 
         computed_gym = gym_insights(self.db)
         computed_recovery = recovery_insights(self.db)
+        computed_feedback = post_session_feedback_loop(self.db)
 
         prompt = self._load_prompt("post_gym").format(
             session_summary=_format_activity_summary(activity),
             sets_data=_format_gym_sets(sets),
-            computed_insights=f"{computed_gym}\n\n{computed_recovery}",
+            computed_insights=f"{computed_gym}\n\n{computed_recovery}\n\n{computed_feedback}",
         )
         return self._call_ai(prompt)
 
@@ -287,9 +294,19 @@ class AICoach:
         today_metrics = self.db.get_daily_metrics(None)
         recent_activities = self.db.get_recent_activities(days=14)
         recent_gym = self._get_recent_gym_sets(days=14, limit=3)
+        coach_context = "\n\n".join(
+            part for part in [
+                professional_coach_layer(self.db, today_metrics),
+                post_session_feedback_loop(self.db),
+                weekly_programming_layer(self.db),
+                exercise_progression_layer(self.db),
+            ]
+            if part
+        )
 
         prompt = self._load_prompt("workout_plan").format(
             today_metrics=_format_metrics(today_metrics) if today_metrics else "No data today",
+            coach_context=coach_context if coach_context else "No computed coach context.",
             recent_activities=_format_activities(recent_activities),
             recent_gym_sets=recent_gym,
             user_request=user_request if user_request else "Generate the best workout for today",
@@ -301,6 +318,15 @@ class AICoach:
         today_metrics = self.db.get_daily_metrics(None)
         recent_activities = self.db.get_recent_activities(days=14)
         recent_gym = self._get_recent_gym_sets(days=14, limit=3)
+        coach_context = "\n\n".join(
+            part for part in [
+                professional_coach_layer(self.db, today_metrics),
+                post_session_feedback_loop(self.db),
+                weekly_programming_layer(self.db),
+                exercise_progression_layer(self.db),
+            ]
+            if part
+        )
 
         # Load exercise list for the prompt
         exercises_path = self.memory_dir.parent / "exercises.json"
@@ -317,6 +343,7 @@ class AICoach:
         prompt = self._load_prompt("workout_structured").format(
             memory=self.get_memory(),
             today_metrics=_format_metrics(today_metrics) if today_metrics else "No data today",
+            coach_context=coach_context if coach_context else "No computed coach context.",
             recent_activities=_format_activities(recent_activities),
             recent_gym_sets=recent_gym,
             user_request=user_request if user_request else "Generate the best workout for today",
@@ -380,7 +407,7 @@ class AICoach:
                 for s in sets:
                     lines.append(
                         f"  {s.get('exercise', '?')} | "
-                        f"{s.get('reps', '?')} reps × {s.get('weight_kg', '?')}kg | "
+                        f"{s.get('reps', '?')} reps × {s.get('weight_lb', '?')}lb | "
                         f"peak HR {s.get('peak_hr', '?')}"
                     )
         return "\n".join(lines) if lines else "No set data available"
@@ -532,7 +559,7 @@ def _format_gym_sets(sets: list[dict[str, Any]]) -> str:
     for s in sets:
         lines.append(
             f"Set {s['set_number']}: {s.get('exercise', '?')} | "
-            f"{s.get('reps', '?')} reps × {s.get('weight_kg', '?')}kg | "
+            f"{s.get('reps', '?')} reps × {s.get('weight_lb', '?')}lb | "
             f"peak HR {s.get('peak_hr', '?')} | "
             f"recovery HR {s.get('recovery_hr', '?')}"
         )
