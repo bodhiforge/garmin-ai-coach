@@ -194,6 +194,24 @@ def _find_lift_top_hr(
     return closest_hr
 
 
+def parse_hr_series(fit_path: str | Path) -> list[tuple[float, int]]:
+    """(elapsed_seconds, heart_rate) for every record frame with HR."""
+    series: list[tuple[float, int]] = []
+    start_time = None
+    with fitdecode.FitReader(str(fit_path)) as reader:
+        for frame in reader:
+            if not isinstance(frame, fitdecode.FitDataMessage) or frame.name != "record":
+                continue
+            timestamp = _get_field(frame, "timestamp")
+            heart_rate = _get_field(frame, "heart_rate")
+            if timestamp is None or heart_rate is None:
+                continue
+            if start_time is None:
+                start_time = timestamp
+            series.append(((timestamp - start_time).total_seconds(), int(heart_rate)))
+    return series
+
+
 def _get_field(frame: fitdecode.FitDataMessage, name: str) -> Any:
     try:
         field = frame.get_field(name)

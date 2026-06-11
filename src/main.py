@@ -716,6 +716,14 @@ def cmd_strength_profile(args: argparse.Namespace) -> None:
             print(f"- {finding['statement']}")
 
 
+def cmd_basketball_profile(args: argparse.Namespace) -> None:
+    """Print the computed basketball profile. Consumed by Riko for Q&A."""
+    config = load_config(args.config)
+    db = Database(config.data_dir / "garmin.db")
+    from .ai.basketball_profile import basketball_profile_block
+    print(basketball_profile_block(db, days=args.days))
+
+
 def cmd_whoami(args: argparse.Namespace) -> None:
     """Show computed user model — what the system knows about you."""
     _, db, _, sync, _, _ = build_components(args.config)
@@ -927,6 +935,10 @@ def main() -> None:
     strength_parser = subparsers.add_parser("strength-profile", help="Computed strength profile")
     strength_parser.add_argument("--days", type=int, default=90, help="Analysis window in days")
 
+    # basketball-profile — computed basketball conditioning
+    basketball_parser = subparsers.add_parser("basketball-profile", help="Computed basketball profile")
+    basketball_parser.add_argument("--days", type=int, default=90, help="Analysis window in days")
+
     # concern — manage training concerns
     concern_parser = subparsers.add_parser("concern", help="Manage training concerns")
     concern_parser.add_argument("action", choices=["add", "list", "resolve"], help="Action")
@@ -960,6 +972,7 @@ def main() -> None:
         "impact": cmd_impact,
         "whoami": cmd_whoami,
         "strength-profile": cmd_strength_profile,
+        "basketball-profile": cmd_basketball_profile,
         "concern": cmd_concern,
         "push-workout": cmd_push_workout,
     }
