@@ -436,6 +436,24 @@ def cmd_sync(args: argparse.Namespace) -> None:
     except Exception as error:
         logger.warning("Strength finding detection failed: %s", error)
 
+    # Illness/overreach composite — instant channel, 48h cooldown.
+    from .ai.warnings import health_warning
+    try:
+        warning = health_warning(sync.db)
+        if warning is not None and _write_health_alert(sync.db, warning):
+            _trigger_riko_health_alert()
+    except Exception as error:
+        logger.warning("Health warning check failed: %s", error)
+
+    # Discovery detectors — same cheap-and-idempotent contract.
+    from .ai.discovery import store_discovery_findings
+    try:
+        new_discoveries = store_discovery_findings(sync.db)
+        if new_discoveries:
+            print(f"New discovery findings stored: {new_discoveries}")
+    except Exception as error:
+        logger.warning("Discovery detection failed: %s", error)
+
     # Saturday: surface at most one validated insight for the Deep Review.
     if date.today().weekday() == 5:
         try:
@@ -621,6 +639,65 @@ def _write_weekly_insight_card(db, card_path: Path | None = None) -> bool:
     )
     db.mark_insight_surfaced(top["id"])
     return True
+
+
+HEALTH_ALERT_COOLDOWN_HOURS = 48
+DEFAULT_RIKO_HEALTH_ALERT_CRON_NAME = "Riko Health Alert"
+
+
+def _write_health_alert(db, warning: dict, alert_path: Path | None = None) -> bool:
+    """Persist the computed warning for Riko and record the cooldown.
+    Returns True when a fresh alert was written."""
+    if db.hours_since_last_notification("health_warning") < HEALTH_ALERT_COOLDOWN_HOURS:
+        return False
+    target = alert_path or (Path.home() / "ai" / "data" / "signals" / "health-alert.txt")
+    lines = [f"# Health Warning — {warning['date']}", ""]
+    lines.append(
+        f"Fired signals (adverse, ≥1.5σ vs 28d baseline): {', '.join(warning['fired_signals'])}"
+    )
+    for metric, info in warning["details"].items():
+        marker = "  <-- FIRED" if metric in warning["fired_signals"] else ""
+        lines.append(
+            f"- {metric}: {info['value']} (baseline {info['baseline']}, z={info['z']}){marker}"
+        )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("\n".join(lines) + "\n")
+    db.add_notification("health_warning", ",".join(warning["fired_signals"]))
+    return True
+
+
+def _trigger_riko_health_alert() -> bool:
+    """Trigger the disabled 'Riko Health Alert' OpenClaw cron, mirroring
+    _trigger_riko_analysis. Cron id: env override, else lookup by name."""
+    import shutil
+    import subprocess
+    cron_path = os.pathsep.join([
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+        os.environ.get("PATH", ""),
+    ])
+    openclaw_bin = shutil.which("openclaw", path=cron_path) or "/opt/homebrew/bin/openclaw"
+    cron_id = os.environ.get("RIKO_HEALTH_ALERT_CRON_ID") or _openclaw_cron_id_by_name(
+        openclaw_bin, cron_path, DEFAULT_RIKO_HEALTH_ALERT_CRON_NAME
+    )
+    if cron_id is None:
+        print("WARNING: Riko Health Alert cron not found; alert file written but not pushed")
+        return False
+    try:
+        result = subprocess.run(
+            [openclaw_bin, "cron", "run", cron_id],
+            env={**os.environ, "PATH": cron_path},
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0:
+            print(f"Riko health alert triggered (cron {cron_id})")
+            return True
+        print(f"WARNING: health alert trigger failed: {result.stderr[:200]}")
+    except Exception as error:
+        print(f"WARNING: health alert trigger failed: {error}")
+    return False
 
 
 def cmd_strength_profile(args: argparse.Namespace) -> None:
