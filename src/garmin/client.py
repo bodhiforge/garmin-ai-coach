@@ -51,17 +51,14 @@ class GarminClient:
         self._login()
 
     def _login(self) -> None:
-        try:
-            self.client.garth.load(str(GARTH_HOME))
-            # Verify session is valid by fetching display name
-            self.client.display_name = self.client.garth.profile["displayName"]
-            logger.info("Logged in with saved session (user: %s)", self.client.display_name)
-        except Exception:
-            logger.info("Saved session invalid, logging in with credentials")
-            self.client = Garmin(self.email, self.password)
-            self.client.login()
-            self.client.garth.dump(str(GARTH_HOME))
-            logger.info("Login successful, session saved (user: %s)", self.client.display_name)
+        # garminconnect 0.3.x: login(tokenstore=...) loads saved tokens when
+        # valid, otherwise does a credential login and writes tokens back to
+        # the same path. The pre-0.3 client.garth load/dump API is gone.
+        self.client.login(tokenstore=str(GARTH_HOME))
+        logger.info(
+            "Logged in (user: %s, session store: %s)",
+            getattr(self.client, "display_name", "unknown"), GARTH_HOME,
+        )
 
     def get_daily_metrics(self, target_date: date | None = None) -> dict[str, Any]:
         target_date = target_date or date.today()
