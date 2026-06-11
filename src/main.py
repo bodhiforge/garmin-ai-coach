@@ -158,6 +158,14 @@ def _write_training_digest(config, sync, coach, metrics) -> None:
 ## User Memory
 {memory_context if memory_context else "No memory files."}
 """
+
+    deload_path = Path.home() / "ai" / "data" / "signals" / "deload-directive.txt"
+    if deload_path.exists():
+        import time
+        if (time.time() - deload_path.stat().st_mtime) < 8 * 86400:
+            digest += "\n## DELOAD DIRECTIVE (active — lead the push with this)\n"
+            digest += deload_path.read_text()
+
     digest_path.write_text(digest)
     print(f"Digest written to {digest_path} ({len(digest)} chars)")
 
@@ -454,6 +462,15 @@ def cmd_sync(args: argparse.Namespace) -> None:
     except Exception as error:
         logger.warning("Discovery detection failed: %s", error)
 
+    # Week-granularity fatigue check — directive announced by next morning push.
+    from .ai.deload import deload_check
+    try:
+        deload_evidence = deload_check(sync.db)
+        if deload_evidence is not None and _write_deload_directive(sync.db, deload_evidence):
+            print("Deload directive issued")
+    except Exception as error:
+        logger.warning("Deload check failed: %s", error)
+
     # Saturday: surface at most one validated insight for the Deep Review.
     if date.today().weekday() == 5:
         try:
@@ -662,6 +679,39 @@ def _write_monthly_narrative(db, target_path: Path | None = None) -> bool:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(build_user_model(db) + "\n\n" + sleep_rhythm_block(db))
     db.add_notification("monthly_narrative", str(date.today()))
+    return True
+
+
+def _write_deload_directive(db, evidence: dict, target_path: Path | None = None) -> bool:
+    """Persist the deload decision for the digest and Saturday Deep Review."""
+    from datetime import date
+    from .ai.deload import DELOAD_COOLDOWN_HOURS
+    if db.hours_since_last_notification("deload") < DELOAD_COOLDOWN_HOURS:
+        return False
+    target = target_path or (Path.home() / "ai" / "data" / "signals" / "deload-directive.txt")
+    iso_week = date.today().isocalendar()
+    lines = [
+        f"# Deload Directive — issued {date.today()} (apply to next week)",
+        "",
+        "Action: cut next week's training volume 40-50%. Keep movement quality work",
+        "(home micro-sessions, mobility); no progression jumps; basketball at RPE<=6.",
+        "",
+        f"Evidence: weekly corrected loads {evidence['weekly_loads']} (rising 3+ weeks);"
+        f" 7d HRV {evidence['hrv_recent']} vs 28d {evidence['hrv_baseline']};"
+        f" 7d readiness {evidence['readiness_recent']} vs 28d {evidence['readiness_baseline']}.",
+        "",
+        "Veto: Bodhi can cancel by telling Riko — then delete this file.",
+    ]
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("\n".join(lines) + "\n")
+    db.add_notification("deload", str(date.today()))
+    db.insert_insight(
+        key=f"deload.applied_{iso_week.year}_{iso_week.week:02d}",
+        category="deload",
+        statement=f"Deload week issued {date.today()}: " + lines[2],
+        evidence=evidence,
+        status="surfaced",  # announced via morning push, not the Saturday card queue
+    )
     return True
 
 
