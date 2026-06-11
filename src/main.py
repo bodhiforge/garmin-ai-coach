@@ -461,6 +461,12 @@ def cmd_sync(args: argparse.Namespace) -> None:
                 print("Weekly insight card written")
         except Exception as error:
             logger.warning("Insight card failed: %s", error)
+        if date.today().day <= 7:  # first Saturday of the month
+            try:
+                if _write_monthly_narrative(sync.db):
+                    print("Monthly narrative written")
+            except Exception as error:
+                logger.warning("Monthly narrative failed: %s", error)
 
     # --- Morning push state machine ---
     today = str(date.today())
@@ -638,6 +644,23 @@ def _write_weekly_insight_card(db, card_path: Path | None = None) -> bool:
         f"# Did You Know — {date_type.today()}\n\n{top['statement']}{evidence}\n"
     )
     db.mark_insight_surfaced(top["id"])
+    return True
+
+
+MONTHLY_NARRATIVE_COOLDOWN_HOURS = 21 * 24  # >2 weeks ⇒ once per month in practice
+
+
+def _write_monthly_narrative(db, target_path: Path | None = None) -> bool:
+    """Compose the monthly progression narrative inputs from the computed
+    user model. Pure data file — Riko writes the prose."""
+    from datetime import date
+    if db.hours_since_last_notification("monthly_narrative") < MONTHLY_NARRATIVE_COOLDOWN_HOURS:
+        return False
+    from .ai.user_model import build_user_model
+    target = target_path or (Path.home() / "ai" / "data" / "signals" / "monthly-narrative.txt")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(build_user_model(db))
+    db.add_notification("monthly_narrative", str(date.today()))
     return True
 
 
