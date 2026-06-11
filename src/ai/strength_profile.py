@@ -194,6 +194,131 @@ def e1rm_trend(db: Database, days: int = 90) -> dict[str, dict[str, Any]]:
     return trend
 
 
+FINDING_MIN_SESSIONS = 10
+FINDING_MIN_SETS = 80
+PULL_PUSH_RATIO_GATE = 2.0
+
+
+def strength_structural_findings(db: Database, days: int = 90) -> list[dict[str, Any]]:
+    """Gated structural findings ready for the insights store. Empty on thin data."""
+    rows = load_strength_sets(db, days=days)
+    sessions = len({row["activity_id"] for row in rows})
+    if sessions < FINDING_MIN_SESSIONS or len(rows) < FINDING_MIN_SETS:
+        return []
+
+    findings: list[dict[str, Any]] = []
+    matrix = movement_pattern_matrix(db, days=days)
+    counts = matrix["counts"]
+
+    pull_sets = counts["pull_h"] + counts["pull_v"]
+    push_sets = counts["push_h"] + counts["push_v"]
+    if push_sets > 0 and pull_sets / push_sets >= PULL_PUSH_RATIO_GATE:
+        ratio = round(pull_sets / push_sets, 1)
+        findings.append({
+            "key": "strength.pull_push_imbalance",
+            "statement": (
+                f"Pull volume is {ratio}x push volume over the last {days} days"
+                f" ({pull_sets} vs {push_sets} sets). Deliberate posture bias or drift?"
+            ),
+            "evidence": {"pull_sets": pull_sets, "push_sets": push_sets,
+                         "ratio": ratio, "sessions": sessions, "window_days": days},
+        })
+
+    if counts["squat"] == 0:
+        findings.append({
+            "key": "strength.no_squat_pattern",
+            "statement": (
+                f"Zero squat-pattern sets across {sessions} sessions in {days} days —"
+                " all knee-dominant work is lunge variants. Worth a deliberate decision."
+            ),
+            "evidence": {"sessions": sessions, "lunge_sets": counts["lunge"], "window_days": days},
+        })
+
+    zones = rep_zone_distribution(db, days=days)
+    if zones["total_sets"] >= FINDING_MIN_SETS and zones["strength_pct"] == 0.0:
+        findings.append({
+            "key": "strength.no_strength_zone_work",
+            "statement": (
+                f"0% of {zones['total_sets']} sets in the ≤{STRENGTH_REP_MAX}-rep strength zone"
+                f" ({days}d) — everything lives at {zones['hypertrophy_pct']}% hypertrophy /"
+                f" {zones['endurance_pct']}% endurance reps."
+            ),
+            "evidence": {**zones, "window_days": days},
+        })
+
+    rest = rest_interval_analysis(db, days=days)
+    if rest["sample"] >= FINDING_MIN_SETS and rest["rushed_compounds"]:
+        findings.append({
+            "key": "strength.rushed_compound_rests",
+            "statement": (
+                f"Median rest on compound lifts is {rest['compound_median_sec']}s"
+                f" (n={rest['sample']}) — under {COMPOUND_REST_FLOOR_SEC}s, which caps load progression."
+            ),
+            "evidence": {**rest, "window_days": days},
+        })
+
+    return findings
+
+
+def store_strength_findings(db: Database) -> int:
+    """Persist gated findings; returns number of new rows."""
+    inserted = 0
+    for finding in strength_structural_findings(db):
+        if db.insert_insight(
+            key=finding["key"],
+            category="strength",
+            statement=finding["statement"],
+            evidence=finding["evidence"],
+        ):
+            inserted += 1
+    return inserted
+
+
+def strength_profile_block(db: Database, days: int = 90) -> str:
+    """Formatted profile for digests and on-demand queries — same register as
+    the existing computed layers in insights.py."""
+    lines = ["## Strength Profile (computed — LLM MUST use this)"]
+
+    trend = e1rm_trend(db, days=days)
+    for exercise in sorted(trend, key=lambda name: -trend[name]["sessions"])[:8]:
+        info = trend[exercise]
+        marker = " — PLATEAU" if info["plateau"] else ""
+        lines.append(
+            f"- {exercise}: e1RM {info['latest_e1rm']}lb (best {info['best_e1rm']}lb,"
+            f" {info['sessions']} sessions){marker}"
+        )
+
+    volume = weekly_muscle_volume(db)
+    volume_parts = [
+        f"{muscle} {data['weekly_sets']}/wk"
+        + (" LOW" if data["flag"] == "below_floor" else " HIGH" if data["flag"] == "above_ceiling" else "")
+        for muscle, data in volume.items()
+    ]
+    lines.append("Weekly sets vs landmarks (28d): " + ", ".join(volume_parts))
+
+    matrix = movement_pattern_matrix(db, days=days)
+    lines.append(
+        "Pattern coverage: "
+        + ", ".join(f"{pattern} {count}" for pattern, count in matrix["counts"].items())
+        + (f" | gaps: {', '.join(matrix['gaps'])}" if matrix["gaps"] else "")
+    )
+
+    zones = rep_zone_distribution(db, days=days)
+    lines.append(
+        f"Rep zones ({zones['total_sets']} sets): strength {zones['strength_pct']}%,"
+        f" hypertrophy {zones['hypertrophy_pct']}%, endurance {zones['endurance_pct']}%"
+    )
+
+    rest = rest_interval_analysis(db, days=days)
+    if rest["compound_median_sec"] is not None:
+        lines.append(
+            f"Compound rest median: {rest['compound_median_sec']}s (n={rest['sample']})"
+            + (" — RUSHED" if rest["rushed_compounds"] else "")
+        )
+
+    return "\n".join(lines)
+
+
 def load_strength_sets(db: Database, days: int = 90) -> list[dict[str, Any]]:
     """Flat list of lift sets across recent strength sessions, newest first.
     Each row: exercise, reps, weight_lb, rest_duration_sec, date, activity_id.
