@@ -73,8 +73,11 @@ def _strength_details(db: Database, activity: dict[str, Any]) -> list[str]:
         weight, reps = set_row.get("weight_lb"), set_row.get("reps")
         if not _is_lift(exercise) or not reps:
             continue
+        # weights arrive via kg→lb conversion noise (54.98, 4.96); snap to the
+        # 0.5 lb plate resolution for display
+        display_weight = round(weight * 2) / 2 if weight else None
         session_sets.setdefault(exercise, []).append(
-            f"{reps}x{weight:g}lb" if weight else f"{reps} reps"
+            f"{reps}x{display_weight:g}lb" if display_weight else f"{reps} reps"
         )
         if weight and reps:
             session_best[exercise] = max(session_best.get(exercise, 0.0), e1rm(weight, reps))
