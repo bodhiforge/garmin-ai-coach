@@ -423,7 +423,14 @@ def cmd_sync(args: argparse.Namespace) -> None:
     new_activities = sync.sync_activities()
     print(f"Activities synced: {len(new_activities)} new")
     _refresh_recent_gym_sets(sync, coach)
-    _maybe_trigger_training_followup(sync, dry_run=False)
+
+    # Post-session reviews (supersede the old Training Follow-Up — the review
+    # itself asks the one feedback question when data is missing).
+    try:
+        if _write_session_reviews(sync.db):
+            _trigger_riko_session_review()
+    except Exception as error:
+        logger.warning("Session review failed: %s", error)
 
     # Pattern detection runs every sync; keyed dedup makes it idempotent.
     # Detection must never break the sync state machine.
@@ -662,6 +669,61 @@ def _write_weekly_insight_card(db, card_path: Path | None = None) -> bool:
     )
     db.mark_insight_surfaced(top["id"])
     return True
+
+
+DEFAULT_RIKO_SESSION_REVIEW_CRON_NAME = "Riko Session Review"
+
+
+def _write_session_reviews(db, target_path: Path | None = None) -> bool:
+    """Write review blocks for all due sessions; mark them reviewed.
+    Returns True when there is something for Riko to present."""
+    from datetime import date as date_type
+    from .ai.session_review import pending_reviews, review_block
+    due = pending_reviews(db)
+    if not due:
+        return False
+    target = target_path or (Path.home() / "ai" / "data" / "signals" / "session-review.txt")
+    blocks = [f"# Session Review — generated {date_type.today()}", ""]
+    for activity in due:
+        blocks.append(review_block(db, activity))
+        blocks.append("")
+        db.add_notification(f"session_review_{activity['id']}", "sent")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("\n".join(blocks))
+    return True
+
+
+def _trigger_riko_session_review() -> bool:
+    """Mirror of _trigger_riko_health_alert for the session review cron."""
+    import shutil
+    import subprocess
+    cron_path = os.pathsep.join([
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+        os.environ.get("PATH", ""),
+    ])
+    openclaw_bin = shutil.which("openclaw", path=cron_path) or "/opt/homebrew/bin/openclaw"
+    cron_id = os.environ.get("RIKO_SESSION_REVIEW_CRON_ID") or _openclaw_cron_id_by_name(
+        openclaw_bin, cron_path, DEFAULT_RIKO_SESSION_REVIEW_CRON_NAME
+    )
+    if cron_id is None:
+        print("WARNING: Riko Session Review cron not found; review file written but not pushed")
+        return False
+    try:
+        result = subprocess.run(
+            [openclaw_bin, "cron", "run", cron_id],
+            env={**os.environ, "PATH": cron_path},
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0:
+            print(f"Riko session review triggered (cron {cron_id})")
+            return True
+        print(f"WARNING: session review trigger failed: {result.stderr[:200]}")
+    except Exception as error:
+        print(f"WARNING: session review trigger failed: {error}")
+    return False
 
 
 MONTHLY_NARRATIVE_COOLDOWN_HOURS = 21 * 24  # >2 weeks ⇒ once per month in practice
