@@ -10,15 +10,21 @@ Every real training session gets a proactive 复盘 push within ~30 minutes of s
 ## 2. Trigger chain (no new cron schedule — same externally-triggered pattern)
 
 ```
-cmd_sync (*/30, existing) → sync_activities() returns new activities
+cmd_sync (*/30, existing) → recent activities (last 3 days)
 → filter: reviewable type (exclude walking) AND duration ≥ 15 min
-→ per-activity dedup: notification `session_review_{activity_id}` (once, forever)
+→ NOT yet reviewed (notification `session_review_{activity_id}` absent)
+→ DUE: now ≥ activity_end + buffer(type)
 → Python writes ~/ai/data/signals/session-review.txt (computed blocks, zero LLM)
-→ trigger "Riko Session Review" cron (managed prompt, disabled, `openclaw cron run` by name)
-→ Riko writes the Telegram review
+→ mark dedup notifications → trigger "Riko Session Review" cron (managed prompt,
+  disabled, `openclaw cron run` by name) → Riko writes the Telegram review
 ```
 
-Multiple new activities in one sync (rare): the signal file contains one block per pending activity; one trigger, one combined push.
+**Correction buffer (Bodhi edits Garmin data post-hoc, typically within 1-2h):**
+- **strength: 2 hours after activity end** — sets/weights/exercise names are exactly what she corrects; `refresh_recent_gym_sets` (runs every sync) has pulled her edits by then.
+- **all other types: no buffer** (next sync, ~30 min) — HR/zones/runs are not manually edited.
+- Due-ness is recomputed from the DB each sync; no extra state files. A not-yet-due session simply waits for a later sync cycle.
+
+Multiple due activities in one sync (rare): the signal file contains one block per pending activity; one trigger, one combined push.
 
 ## 3. Computed content (`src/ai/session_review.py`, pure Python)
 
