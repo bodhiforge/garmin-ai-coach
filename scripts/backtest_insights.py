@@ -55,3 +55,15 @@ from src.ai.deload import deload_check
 
 deload = deload_check(db)
 print(deload if deload else "No deload due (load not rising 3+ weeks with degraded recovery)")
+
+print("\n=== Session reviews (5 most recent real sessions) ===")
+from src.ai.session_review import EXCLUDED_TYPES, MIN_DURATION_MIN, review_block
+
+recent_real = [
+    a for a in db.get_recent_activities(days=60)
+    if str(a.get("type")) not in EXCLUDED_TYPES
+    and (a.get("duration_min") or 0) >= MIN_DURATION_MIN
+][:5]
+for activity in recent_real:
+    print()
+    print(review_block(db, activity))
