@@ -39,14 +39,15 @@ def _typical_comparison(db: Database, activity: dict[str, Any]) -> str:
     ]
     if len(same_type) < 3:
         return ""
-    mean_load = sum(a["training_load"] for a in same_type) / len(same_type)
-    load = activity.get("training_load") or 0
+    corrected = [db.get_corrected_load(a["id"], a["training_load"]) for a in same_type]
+    mean_load = sum(corrected) / len(corrected)
+    load = db.get_corrected_load(activity["id"], activity.get("training_load") or 0)
     if mean_load <= 0 or load <= 0:
         return ""
     ratio = load / mean_load
     return (
         f"Load {load:.0f} = {ratio * 100:.0f}% of your typical"
-        f" {activity.get('type')} session (n={len(same_type)})"
+        f" {activity.get('type')} session (n={len(same_type)}, corrected)"
     )
 
 
@@ -63,15 +64,17 @@ def _strength_details(db: Database, activity: dict[str, Any]) -> list[str]:
             if weight and reps and exercise:
                 prior_best[exercise] = max(prior_best.get(exercise, 0.0), e1rm(weight, reps))
 
+    from .strength_profile import _is_lift
+
     session_sets: dict[str, list[str]] = {}
     session_best: dict[str, float] = {}
     for set_row in db.get_gym_sets(activity["id"]):
         exercise = str(set_row.get("exercise") or "")
-        if not exercise:
-            continue
         weight, reps = set_row.get("weight_lb"), set_row.get("reps")
+        if not _is_lift(exercise) or not reps:
+            continue
         session_sets.setdefault(exercise, []).append(
-            f"{reps}x{weight:.0f}lb" if weight else f"{reps} reps"
+            f"{reps}x{weight:g}lb" if weight else f"{reps} reps"
         )
         if weight and reps:
             session_best[exercise] = max(session_best.get(exercise, 0.0), e1rm(weight, reps))
